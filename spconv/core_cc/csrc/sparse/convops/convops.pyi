@@ -20,7 +20,7 @@ class ConvTunerSimple:
             arch: 
         """
         ...
-    def get_all_available(self, inp: Tensor, weight: Tensor, out: Tensor, layout_i: int, layout_w: int, layout_o: int, interleave_i: int, interleave_w: int, interleave_o: int, arch: Tuple[int, int], op_type: int, mask_width: int, auto_fp32_accum: bool, fp32_accum: bool, use_tf32: bool = True) -> List[ConvAlgoDesp]: 
+    def get_all_available(self, inp: Tensor, weight: Tensor, out: Tensor, layout_i: int, layout_w: int, layout_o: int, interleave_i: int, interleave_w: int, interleave_o: int, arch: Tuple[int, int], op_type: int, mask_width: int, auto_fp32_accum: bool, fp32_accum: bool, use_tf32: bool = True, groups: int = 1) -> List[ConvAlgoDesp]: 
         """
         Args:
             inp: 
@@ -38,6 +38,7 @@ class ConvTunerSimple:
             auto_fp32_accum: 
             fp32_accum: 
             use_tf32: 
+            groups: 
         """
         ...
     def cached_get_nvrtc_params(self, desp: ConvAlgoDesp, arch: Tuple[int, int], stream_int: int) -> NVRTCParams: 
@@ -119,7 +120,7 @@ class ConvTunerSimple:
             act_type: 
         """
         ...
-    def query_workspace_size(self, desp: ConvAlgoDesp, splitk: int, op_type: int, N: int, C: int, K: int, kv: int) -> int: 
+    def query_workspace_size(self, desp: ConvAlgoDesp, splitk: int, op_type: int, N: int, C: int, K: int, kv: int, groups: int = 1) -> int: 
         """
         Args:
             desp: 
@@ -129,5 +130,6 @@ class ConvTunerSimple:
             C: 
             K: 
             kv: 
+            groups: 
         """
         ...

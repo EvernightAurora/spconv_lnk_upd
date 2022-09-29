@@ -20,7 +20,7 @@ from typing import Dict, List, Optional, Set, Tuple, Union
 from spconv.core_cc.cumm.common import CompileInfo
 import numpy as np
 from cumm import tensorview as tv
-from cumm.conv.bases import ConvLayout, ConvLayoutType, ConvOpType
+from cumm.conv.bases import ConvLayout, ConvLayoutType, ConvOpType, ConvGroupMode
 from cumm.conv.kernel import ConvKernel
 from cumm.gemm.kernel import GemmKernel
 
@@ -618,7 +618,7 @@ class SimpleConv:
         ]
         self.prebuilt_desps = prebuilt_desps
         self.prebuilt_desp_names = {str(d) for d in prebuilt_desps}
-        self.prebuilt_desp_names.clear()
+        # self.prebuilt_desp_names.clear()
         self.lock = Lock()
 
         self.static_key_to_desps = group_by(self.get_static_key, all_desps)
@@ -679,7 +679,8 @@ class SimpleConv:
                           op_type: ConvOpType,
                           mask_width: int,
                           fp32_accum: Optional[bool] = None,
-                          use_tf32: bool = True):
+                          use_tf32: bool = True,
+                          groups: int = 1):
 
         avail_algos = get_available_algo_str_from_arch(arch)
         finally_algos: List[ConvAlgoDesp] = []
@@ -721,13 +722,23 @@ class SimpleConv:
                 if use_f32_as_accum:
                     if desp.dacc == tv.float16:
                         continue
+            if groups > 1:
+                if desp.group_mode.value == ConvGroupMode.kNone.value:
+                    continue
+                K_per_group = out.shape[-1] // groups
+                C_per_group = inp.shape[-1] // groups
+                if not desp.support_grouped(C_per_group, K_per_group):
+                    continue
+            else:
+                if desp.group_mode.value != ConvGroupMode.kNone.value:
+                    continue
 
-            ldi = inp.dim(-1)
+            ldi = inp.dim(-1) // groups
             ldw = weight.dim(-1)
-            ldo = out.dim(-1)
+            ldo = out.dim(-1) // groups
             mask_width_valid = True
 
-            if desp.op_type == ConvOpType.kBackwardWeight.value:
+            if desp.op_type.value == ConvOpType.kBackwardWeight.value:
                 assert mask_width > 0
                 mask_width_valid = mask_width % desp.tile_shape[2] == 0
             if desp.supported_ldx_conv(ldi, ldw, ldo) and mask_width_valid:
@@ -941,7 +952,8 @@ class SimpleConv:
                               bias: Optional[tv.Tensor] = None,
                               act_alpha: float = 0.0,
                               act_beta: float = 0.0,
-                              act_type: tv.gemm.Activation = tv.gemm.Activation.None_):
+                              act_type: tv.gemm.Activation = tv.gemm.Activation.None_,
+                              groups: int = 1):
         channel_k = output.dim(1)
         channel_c = inp.dim(1)
         # GemmMainUnitTest.stream_synchronize(stream)
@@ -963,8 +975,9 @@ class SimpleConv:
         params.conv_algo_desp = profile_res.algo_desp
         params.input = inp
         params.verbose = verbose
-        params.weight = weight.view([channel_k, -1, channel_c])
+        params.weight = weight.view([channel_k, -1, channel_c // groups])
         params.output = output
+        params.groups = groups
 
         params.split_k_slices = split_k_slices
         params.alpha = alpha

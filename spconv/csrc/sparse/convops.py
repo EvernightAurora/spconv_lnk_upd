@@ -1009,6 +1009,7 @@ class ConvTunerSimple(pccm.ParameterizedClass):
         code.arg("auto_fp32_accum", "bool")
         code.arg("fp32_accum", "bool")
         code.arg("use_tf32", "bool", "true")
+        code.arg("groups", "int", "1")
 
         code.raw(f"""
         tv::gemm::ConvOpType op_type_cpp = static_cast<tv::gemm::ConvOpType>(op_type);
@@ -1066,6 +1067,18 @@ class ConvTunerSimple(pccm.ParameterizedClass):
                     }}
                 }}
             }}
+            if (groups > 1) {{
+                if (desp.group_mode == tv::gemm::ConvGroupMode::kNone)
+                    continue;
+                int C_per_group = inp.dim(1) / groups;
+                int K_per_group = out.dim(1) / groups;
+                if (!desp.support_grouped(C_per_group, K_per_group))
+                    continue;
+            }} else {{
+                if (desp.group_mode != tv::gemm::ConvGroupMode::kNone)
+                    continue;
+            }}
+
 
             int ldi = inp.dim(-1);
             int ldw = weight.dim(-1);
@@ -1406,6 +1419,7 @@ class ConvTunerSimple(pccm.ParameterizedClass):
         code.arg("desp", "tv::gemm::ConvAlgoDesp")
         code.arg("splitk", "int")
         code.arg("op_type, N, C, K, kv", "int")
+        code.arg("groups", "int", "1")
         if CUMM_CPU_ONLY_BUILD:
             code.raw(f"TV_THROW_RT_ERR(\"not implemented for cpu!!!\")")
             return code.ret("int")
@@ -1414,7 +1428,7 @@ class ConvTunerSimple(pccm.ParameterizedClass):
         auto mnk = ConvMain::extract_mnk(op_type, N, C, K, kv, -1, -1, true);
         return desp.query_conv_workspace_size(
             std::get<0>(mnk), std::get<1>(mnk), std::get<2>(mnk),
-            splitk, kv);
+            splitk, kv, groups);
         ''')
         return code.ret("int")
 

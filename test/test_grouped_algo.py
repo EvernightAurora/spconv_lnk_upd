@@ -1,4 +1,4 @@
-# Copyright 2021 Yan Yan
+# Copyright 2022 Yan Yan, Fan Xie
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -17,6 +17,7 @@ We can't test all kernels in network because auto-tuner will only find one best 
 """
 
 
+from stringprep import b3_exceptions
 import sys
 from pathlib import Path
 from typing import Dict, List, Tuple
@@ -61,10 +62,52 @@ NUMPY_DTYPE_TO_TORCH = {
     np.int8: torch.int8,
 
 }
+import os
+os.environ["CUDA_LAUNCH_BLOCKING"]="1"
 
-class SparseConvTester:
+
+def grouped_conv_gemm_ref(a, b, op_type, groups):           
+    # fwd:  N * C @ C/g * K => N * K
+    # bwdI: N * K @ K * C/g => N * C
+    # bwdW: K * N @ N * C => K * C/g
+    if op_type == ConvOpType.kForward:
+        C_per_group = b.shape[0]
+        K_per_group = b.shape[1] // groups
+        c = np.zeros([a.shape[0], b.shape[1]], dtype=a.dtype)
+        for i in range(groups):
+            c_begin = i * C_per_group
+            c_end = c_begin + C_per_group
+            k_begin = i * K_per_group
+            k_end = k_begin + K_per_group
+            c[:, k_begin: k_end] = a[:, c_begin: c_end] @ b[:, k_begin: k_end]
+
+    elif op_type == ConvOpType.kBackwardInput:
+        K_per_group = a.shape[1] // groups
+        C_per_group = b.shape[1]
+        c = np.zeros([a.shape[0], C_per_group * groups], dtype=a.dtype)
+        for i in range(groups):
+            c_begin = i * C_per_group
+            c_end = c_begin + C_per_group
+            k_begin = i * K_per_group
+            k_end = k_begin + K_per_group
+            c[:, c_begin: c_end] = a[:, k_begin: k_end] @ b[k_begin: k_end, :]
+    else:
+        K_per_group = a.shape[0] // groups
+        C_per_group = b.shape[1] // groups
+        c = np.zeros([K_per_group * groups, C_per_group], dtype=a.dtype)
+        for i in range(groups):
+            c_begin = i * C_per_group
+            c_end = c_begin + C_per_group
+            k_begin = i * K_per_group
+            k_end = k_begin + K_per_group
+            c[k_begin: k_end, :] = a[k_begin: k_end, :] @ b[:, c_begin: c_end]
+    return c
+
+
+class SparseConvTesterGrouped:
     def __init__(self, algo: ConvAlgo, subm: bool, shape: List[int], bs: int, dtype: np.dtype, N: int, K: int, C: int, 
-        ksize: int, stride: int, padding: int, dilation: int, check_bias: bool = False, check_act: bool = False) -> None:
+        ksize: int, stride: int, padding: int, dilation: int, check_bias: bool = False, check_act: bool = False,
+        groups: int = 1) -> None:
         ndim = 3
         transpose = False
         self.shape = shape 
@@ -78,6 +121,8 @@ class SparseConvTester:
         self.padding = expand_nd(ndim, padding, ) 
         self.dilation = expand_nd(ndim, dilation) 
         self.N = N
+        self.groups = groups
+        assert self.K % self.groups == 0 and self.C % self.groups == 0
         self.device = torch.device("cuda:0")
         op = expand_nd(ndim, 0)
         self.kv: int = np.prod(self.ksize)
@@ -162,7 +207,7 @@ class SparseConvTester:
             self.inp = np.random.randint(-2, 2, size=[voxels_np.shape[0],
                                                     C]).astype(np.int8)
             self.weight = np.random.randint(-2, 2, size=[K, *self.ksize,
-                                                    C]).astype(np.int8)
+                                                    C // groups]).astype(np.int8)
             self.output = np.random.randint(-2, 2, size=[
                 self.out_inds.shape[0], K
             ]).astype(dtype)
@@ -174,7 +219,7 @@ class SparseConvTester:
             self.inp = np.random.uniform(-1, 1, size=[
                 voxels_np.shape[0], C
             ]).astype(dtype)
-            self.weight = np.random.uniform(-1, 1, size=[K, *self.ksize, C]).astype(dtype)
+            self.weight = np.random.uniform(-1, 1, size=[K, *self.ksize, C // groups]).astype(dtype)
             self.output = np.random.uniform(-1, 1, size=[
                 self.out_inds.shape[0], K
             ]).astype(dtype)
@@ -183,14 +228,14 @@ class SparseConvTester:
             ]).astype(dtype)
 
         self.weight_ref = self.weight.transpose(1, 2, 3, 0, 4)
-        self.weight_ref = np.ascontiguousarray(self.weight_ref).reshape(-1, K, C)
+        self.weight_ref = np.ascontiguousarray(self.weight_ref).reshape(-1, K, C // groups)
         self.out_ref, self.din_ref, self.dw_ref = self._get_ref_output()
         if check_bias:
             self.out_ref += self.bias
             # relu
         if check_act:
             self.out_ref = np.maximum(self.out_ref, 0)
-        self.dw_ref = np.ascontiguousarray(self.dw_ref.transpose(1, 0, 2).reshape(K, *self.ksize, C))
+        self.dw_ref = np.ascontiguousarray(self.dw_ref.transpose(1, 0, 2).reshape(K, *self.ksize, C // groups))
         self.arch = tv.get_compute_capability()
 
     def get_output_ref_spt(self):
@@ -214,23 +259,26 @@ class SparseConvTester:
             i_inds = self.indice_pairs_np[0][filter_offset][:nhot]
             o_inds = self.indice_pairs_np[1][filter_offset][:nhot]
             a = self.inp[i_inds]
-            cc = a.astype(
-                np.float32) @ self.weight_ref[filter_offset].T.astype(
-                    np.float32)
+            # cc = a.astype(
+            #     np.float32) @ self.weight_ref[filter_offset].T.astype(
+            #         np.float32)
+            cc = grouped_conv_gemm_ref(a.astype(np.float32), self.weight_ref[filter_offset].T.astype(np.float32), ConvOpType.kForward, self.groups)
             output_ref[o_inds] += cc
             # we use random output as dout here
             a = self.output[self.out_order][o_inds]
             # NK @ KC
-            cc = a.astype(
-                np.float32) @ self.weight_ref[filter_offset].astype(
-                    np.float32)
+            # cc = a.astype(
+            #     np.float32) @ self.weight_ref[filter_offset].astype(
+            #         np.float32)
+            cc = grouped_conv_gemm_ref(a.astype(np.float32), self.weight_ref[filter_offset].astype(np.float32), ConvOpType.kBackwardInput, self.groups)
             dinput_ref[i_inds] += cc
             # use random output and random inp as dout and inp
             out_gather = self.output[self.out_order][o_inds]  # [N, K]
             inp_gather = self.inp[i_inds]  # [N, C]
             # KN @ NC
-            dw_res = out_gather.astype(
-                np.float32).T @ inp_gather.astype(np.float32)
+            # dw_res = out_gather.astype(
+            #     np.float32).T @ inp_gather.astype(np.float32)
+            dw_res = grouped_conv_gemm_ref(out_gather.astype(np.float32).T, inp_gather.astype(np.float32), ConvOpType.kBackwardWeight, self.groups)
             dw_ref[filter_offset] = dw_res
         if self.dtype == np.int8:
             output_ref = np.clip(output_ref, -127, 127)
@@ -270,7 +318,7 @@ class SparseConvTester:
 
 def _test_impgemm_conv_cuda(subm: bool):
     ndim = 3
-    np.random.seed(50005)
+    np.random.seed(50004)
     dtype_to_tol = {
         np.float32: (1e-2, 1e-2),
         np.float16: (1e-2, 1e-2),
@@ -279,15 +327,15 @@ def _test_impgemm_conv_cuda(subm: bool):
     device = torch.device("cuda:0")
     shapes = [[19, 18, 17]]
     batchsizes = [1]
-    dtypes = [np.float32, np.float16]
+    dtypes = [np.float16]
     # dtypes = [np.float16]
 
     # dtypes = [np.int8]
     test_case = TestCase()
     # in_channels = [32]
     # out_channels = [32, 48, 64]
-    in_channels = [32, 47]
-    out_channels = [32, 48, 62]
+    in_channels_per = [8, 16, 32, 64]
+    out_channels_per = [8, 16, 32, 96]
     # in_channels = [32]
     # out_channels = [32]
 
@@ -297,11 +345,13 @@ def _test_impgemm_conv_cuda(subm: bool):
         strides = [1]
         paddings = [0]
         dilations = [1]
+        groups = [2, 3, 4, 6, 11]
     else:
         ksizes = [2, 3]
         strides = [1, 2, 3]
         paddings = [0, 1]
         dilations = [1, 2]
+        groups = [2, 3, 5]
 
     algos = [
         # ConvAlgo.MaskSplitImplicitGemm,
@@ -309,17 +359,24 @@ def _test_impgemm_conv_cuda(subm: bool):
     ]
     arch = torch.cuda.get_device_capability()
     force_nvrtc = False
-    for shape, bs, C, K, k, s, p, d, algo, dtype in tqdm.tqdm(params_grid(
-            shapes, batchsizes, in_channels, out_channels, ksizes,
-            strides, paddings, dilations, algos, dtypes)):
+    for shape, bs, C_i, K_i, k, s, p, d, algo, dtype, group in tqdm.tqdm(params_grid(
+            shapes, batchsizes, in_channels_per, out_channels_per, ksizes,
+            strides, paddings, dilations, algos, dtypes, groups)):
+        C = C_i * group
+        K = K_i * group
+        SPK_SET = [1, 4, 16, 64]
+        # if K <= 32 or K % 32 != 0:
+        #     SPK_SET = [1]
         shape_prod = np.prod(shape)
         num_batch = np.random.randint(int(0.2 * shape_prod), int(0.7 * shape_prod))
+        # if C_i % 32:
+        #     SPK_SET = [1]
         # C = np.random.randint(int(0.3 * C), int(0.7 * C))
         # K = np.random.randint(int(0.3 * K), int(0.7 * K))
         multipler = max(C, K) / multiple_base
         multipler = max(multipler, 1.0)
         # print(num_batch)
-        tester = SparseConvTester(algo, subm, shape, bs, dtype, num_batch, K, C, k, s, p, d, check_bias=True, check_act=True)
+        tester = SparseConvTesterGrouped(algo, subm, shape, bs, dtype, num_batch, K, C, k, s, p, d, check_bias=True, check_act=True, groups=group)
         bias = None
         act = tv.gemm.Activation.None_
         if tester.check_bias:
@@ -335,15 +392,16 @@ def _test_impgemm_conv_cuda(subm: bool):
                 avail_desps = CONV_CPP.get_all_available(inp_tv, weight_tv, output_tv, 
                     NHWC.layout_type.value, NHWC.layout_type.value, 
                     NHWC.layout_type.value, NHWC.interleave, NHWC.interleave, NHWC.interleave, arch, op_type.value, -1, True, False,
-                        use_tf32=SPCONV_ALLOW_TF32)
+                        use_tf32=SPCONV_ALLOW_TF32, groups=group)
             else:
                 avail_desps = CONV.get_all_available(inp_tv, weight_tv, output_tv, NHWC, NHWC, NHWC, arch, op_type, -1,
-                        use_tf32=SPCONV_ALLOW_TF32)
+                        use_tf32=SPCONV_ALLOW_TF32, groups=group)
             if op_type == ConvOpType.kForward and tester.check_act:
                 act = tv.gemm.Activation.ReLU
             else:
                 act = tv.gemm.Activation.None_
             assert avail_desps
+            # print( "avail: ", avail_desps)
             for desp in avail_desps:
                 if not subm:
                     if op_type == ConvOpType.kForward:
@@ -413,6 +471,7 @@ def _test_impgemm_conv_cuda(subm: bool):
                                 force_nvrtc=force_nvrtc,
                                 bias=bias_cur if is_fwd and bias_cur is not None else tv.Tensor(),
                                 act_type=act,
+                                groups=group,
                             )
                         else:
                             CONV.run_with_tuned_result(
@@ -433,6 +492,7 @@ def _test_impgemm_conv_cuda(subm: bool):
                                 force_nvrtc=force_nvrtc,
                                 bias=bias_cur if is_fwd else None,
                                 act_type=act,
+                                groups=group,
                             )
 
                 else:
@@ -491,6 +551,7 @@ def _test_impgemm_conv_cuda(subm: bool):
                                 force_nvrtc=force_nvrtc,
                                 bias=bias if is_fwd and bias is not None else tv.Tensor(),
                                 act_type=act,
+                                groups=group,
                             )
                         else:
                             CONV.run_with_tuned_result(
@@ -511,6 +572,7 @@ def _test_impgemm_conv_cuda(subm: bool):
                                 force_nvrtc=force_nvrtc,
                                 bias=bias if is_fwd else None,
                                 act_type=act,
+                                groups=group,
                             )
 
                 out_ref = tester.out_ref
@@ -533,18 +595,19 @@ def _test_impgemm_conv_cuda(subm: bool):
                     else:
                         error_norm = np.linalg.norm(din_ref.reshape(-1) - din_my.reshape(-1))
                         assert error_norm < 10 * multipler, f"{desp}, {error_norm}, {k}, {s}, {p}, {d}"
+                print(desp, " \033[1;38;5;9m PASSED \033[0m ", op_type, f" with ckg {C}, {K}, {group}")
         inp_tv, weight_tv, output_tv = tester.get_operands(ConvOpType.kBackwardWeight)
-        for spk in [1, 4, 16, 64]:
+        for spk in SPK_SET:
             for mask_width, mask_output in mask_width_to_mask_out_fwd.items():
                 if SPCONV_CPP_GEMM:
                     avail_desps = CONV_CPP.get_all_available(inp_tv, weight_tv, output_tv, 
                         NHWC.layout_type.value, NHWC.layout_type.value, 
                         NHWC.layout_type.value, NHWC.interleave, NHWC.interleave, NHWC.interleave, arch, 
                         ConvOpType.kBackwardWeight.value, mask_width, True, False,
-                        use_tf32=SPCONV_ALLOW_TF32)
+                        use_tf32=SPCONV_ALLOW_TF32, groups=group)
                 else:
                     avail_desps = CONV.get_all_available(inp_tv, weight_tv, output_tv, NHWC, NHWC, NHWC, arch, ConvOpType.kBackwardWeight, mask_width,
-                        use_tf32=SPCONV_ALLOW_TF32)
+                        use_tf32=SPCONV_ALLOW_TF32, groups=group)
                 for desp in avail_desps:
                     weight_tv.zero_()
                     if subm:
@@ -572,6 +635,7 @@ def _test_impgemm_conv_cuda(subm: bool):
                                 mask_width=mask_width,
                                 beta=beta,
                                 verbose=False,
+                                groups=group
                             )
                     else:
                         indice_pairs = tester.pair_fwd  # inp -> out
@@ -599,6 +663,7 @@ def _test_impgemm_conv_cuda(subm: bool):
                                 mask_width=mask_width,
                                 beta=beta,
                                 verbose=False,
+                                groups=group,
                             )
                     dw_ref = tester.dw_ref
                     dw_my = weight_tv.cpu().numpy()
@@ -611,307 +676,7 @@ def _test_impgemm_conv_cuda(subm: bool):
                         if (error_norm > 5):
                             print(f"{desp}, Error={error_norm}, {spk}")
                         assert error_norm < 10 * multipler
-
-def _test_native_conv_cuda(subm: bool):
-    ndim = 3
-    dtype_to_tol = {
-        np.float32: (1e-4, 1e-4),
-        np.float16: (1e-2, 1e-2),
-        np.int8: (1e-4, 1e-4),
-    }
-    device = torch.device("cuda:0")
-    shapes = [[19, 18, 17]]
-    batchsizes = [1]
-    dtypes = [np.float32, np.float16]
-    test_case = TestCase()
-    in_channels = [32, 47]
-    out_channels = [32, 48, 62]
-    if subm:
-        ksizes = [3, 5]
-        strides = [1]
-        paddings = [0]
-        dilations = [1]
-    else:
-        ksizes = [2, 3]
-        strides = [1, 2, 3]
-        paddings = [0, 1]
-        dilations = [1, 2]
-    multiple_base = 128
-
-    arch = torch.cuda.get_device_capability()
-    stream = get_current_stream()
-    force_nvrtc = False
-    for shape, bs, C, K, k, s, p, d, dtype in tqdm.tqdm(params_grid(
-            shapes, batchsizes, in_channels, out_channels, ksizes,
-            strides, paddings, dilations, dtypes)):
-        tester = SparseConvTester(ConvAlgo.Native, subm, shape, bs, dtype, 1500, K, C, k, s, p, d, check_bias=True, check_act=True)
-        bias = None
-        if tester.check_bias:
-            bias = tv.from_numpy(tester.bias).cuda()
-        atol, rtol = dtype_to_tol[dtype]
-        multipler = max(C, K) / multiple_base
-        multipler = max(multipler, 1.0)
-
-        kv_center = tester.kv // 2
-        kv = tester.kv
-        pair_in = torch_tensor_to_tv(tester.pair_native)[0]
-        pair_out = torch_tensor_to_tv(tester.pair_native)[1]
-
-        op_types = [ConvOpType.kForward, ConvOpType.kBackwardInput, ConvOpType.kBackwardWeight]
-        # op_types = [ConvOpType.kForward]
-
-        indice_pair_num_cpu = tester.indice_num_per_loc_np
-        spk = 1
-
-        out_ref = tester.out_ref
-        din_ref = tester.din_ref
-        dw_ref = tester.dw_ref.reshape(K, -1, C)
-
-        for op_type in op_types:
-            inp_th, weight_th, output_th = tester.get_operands_torch(op_type)
-            weight_th = weight_th.view(K, -1, C)
-            inp_tv = torch_tensor_to_tv(inp_th)
-            weight_tv = torch_tensor_to_tv(weight_th)
-            output_tv = torch_tensor_to_tv(output_th)
-            if op_type == ConvOpType.kForward:
-                a = inp_tv
-                c = output_tv
-                b = weight_tv.select(1, tester.kv // 2)
-                if SPCONV_CPP_GEMM:
-                    avail_desps = GEMM_CPP.get_all_available(a, b, c, False, True, False, arch, ShuffleStrideType.ShuffleAC.value)
-                else:
-                    avail_desps = GEMM.get_all_available(a, b, c, False, True, False, arch, ShuffleStrideType.ShuffleAC)
-
-                for desp in avail_desps:
-                    if subm:
-                        torch.mm(inp_th, weight_th[:, tester.kv // 2].T, out=output_th)
-                            # output_th += bias_th
-                    else:
-                        output_tv.zero_()
-                    inited = subm
-                    # determine last valid subm indices, then apply 
-                    for i, nhot in enumerate(indice_pair_num_cpu):
-                        if subm and i == kv_center:
-                            continue
-                        if subm and i > kv_center:
-                            nhot = indice_pair_num_cpu[kv - i - 1]
-                        if nhot <= 0:
-                            continue
-                        inp_indices = pair_in[i].slice_first_axis(0, nhot)
-                        out_indices = pair_out[i].slice_first_axis(0, nhot)
-                        b = weight_tv.select(1, i)
-                        # inp @ filter.T, NC @ KC
-                        beta = 1.0 if inited else 0.0
-                        if SPCONV_CPP_GEMM:
-                            GEMM_CPP.run_with_tuned_result(
-                                GemmTuneResult(desp, tester.arch, 1),
-                                a,
-                                b,
-                                c,
-                                False,
-                                True,
-                                False,
-                                arch=arch,
-                                stream_int=stream,
-                                shuffle_type=ShuffleStrideType.ShuffleAC.value,
-                                a_inds=inp_indices,
-                                b_inds=tv.Tensor(),
-                                c_inds=out_indices,
-                                hint=AlgoHint.Fowrard.value,
-                                alpha=1.0,
-                                beta=beta,
-                                force_nvrtc=force_nvrtc)
-                        else:
-                            GEMM.run_with_tuned_result(
-                                BestAlgoByProfile(desp, tester.arch, 1),
-                                a,
-                                b,
-                                c,
-                                False,
-                                True,
-                                False,
-                                arch=arch,
-                                stream=stream,
-                                shuffle_type=ShuffleStrideType.ShuffleAC,
-                                a_inds=inp_indices,
-                                c_inds=out_indices,
-                                hint=AlgoHint.Fowrard.value,
-                                alpha=1.0,
-                                beta=beta,
-                                force_nvrtc=force_nvrtc)
-                        inited = True
-                    if bias is not None and tester.check_act:
-                        InferenceOps.bias_add_act_inplace(output_tv, bias, tv.gemm.Activation.ReLU, 0, 0)
-                    else:
-                        if bias is not None:
-                            InferenceOps.bias_add_inplace(output_tv, bias, 0)
-                        if tester.check_act:
-                            InferenceOps.activation_inplace(output_tv, tv.gemm.Activation.ReLU, 0, 0)
-                    out_my = output_tv.cpu().numpy()
-                    if dtype != np.float16:
-                        # error_norm = np.linalg.norm(out_ref.reshape(-1) - out_my.reshape(-1))
-                        # assert error_norm < 1
-                        # print(desp, K, C, k, error_norm)
-
-                        test_case.assertAllClose(out_ref, out_my, atol=atol, rtol=rtol)
-                    else:
-                        error_norm = np.linalg.norm(out_ref.reshape(-1) - out_my.reshape(-1))
-                        assert error_norm < 10 * multipler
-
-            elif op_type == ConvOpType.kBackwardInput:
-                a = output_tv
-                b = weight_tv.select(1, tester.kv // 2)
-                c = inp_tv
-                if SPCONV_CPP_GEMM:
-                    avail_desps = GEMM_CPP.get_all_available(a, b, c, False, False, False, arch, ShuffleStrideType.ShuffleAC.value,
-                        use_tf32=SPCONV_ALLOW_TF32)
-                else:
-                    avail_desps = GEMM.get_all_available(a, b, c, False, False, False, arch, ShuffleStrideType.ShuffleAC,
-                        use_tf32=SPCONV_ALLOW_TF32)
-
-                for desp in avail_desps:
-                    if subm:
-                        torch.mm(output_th, weight_th[:, tester.kv // 2], out=inp_th)
-                    else:
-                        inp_tv.zero_()
-                    inited = subm
-                    for i, nhot in enumerate(indice_pair_num_cpu):
-                        if subm and i == kv_center:
-                            continue
-                        if subm and i > kv_center:
-                            nhot = indice_pair_num_cpu[kv - i - 1]
-                        if nhot <= 0:
-                            continue
-                        inp_indices = pair_in[i].slice_first_axis(0, nhot)
-                        out_indices = pair_out[i].slice_first_axis(0, nhot)
-                        b = weight_tv.select(1, i)
-                        # inp @ filter.T, NC @ KC
-                        beta = 1.0 if inited else 0.0
-                        if SPCONV_CPP_GEMM:
-                            GEMM_CPP.run_with_tuned_result(
-                                GemmTuneResult(desp, tester.arch, 1),
-                                a,
-                                b,
-                                c,
-                                False,
-                                False,
-                                False,
-                                arch=arch,
-                                stream_int=stream,
-                                shuffle_type=ShuffleStrideType.ShuffleAC.value,
-                                a_inds=out_indices,
-                                b_inds=tv.Tensor(),
-                                c_inds=inp_indices,
-                                hint=AlgoHint.Fowrard.value,
-                                alpha=1.0,
-                                beta=beta,
-                                force_nvrtc=force_nvrtc)
-                        else:
-                            GEMM.run_with_tuned_result(
-                                BestAlgoByProfile(desp, tester.arch, 1),
-                                a,
-                                b,
-                                c,
-                                False,
-                                False,
-                                False,
-                                arch=arch,
-                                stream=stream,
-                                shuffle_type=ShuffleStrideType.ShuffleAC,
-                                a_inds=out_indices,
-                                c_inds=inp_indices,
-                                hint=AlgoHint.Fowrard.value,
-                                alpha=1.0,
-                                beta=beta,
-                                force_nvrtc=force_nvrtc)
-
-                        inited = True
-                    din_my = inp_tv.cpu().numpy()
-                    if dtype != np.float16:
-                        # error_norm = np.linalg.norm(din_ref.reshape(-1) - din_my.reshape(-1))
-                        # print(desp, K, C, k, error_norm)
-                        test_case.assertAllClose(din_ref, din_my, atol=atol, rtol=rtol)
-                        # assert error_norm < 1
-
-                    else:
-                        error_norm = np.linalg.norm(din_ref.reshape(-1) - din_my.reshape(-1))
-                        assert error_norm < 10 * multipler
-            else:
-                a = output_tv
-                b = inp_tv
-                c = weight_tv.select(1, tester.kv // 2)
-                if SPCONV_CPP_GEMM:
-                    avail_desps = GEMM_CPP.get_all_available(a, b, c, True, False, False, arch, ShuffleStrideType.ShuffleAB.value,
-                        use_tf32=SPCONV_ALLOW_TF32)
-                else:
-                    avail_desps = GEMM.get_all_available(a, b, c, True, False, False, arch, ShuffleStrideType.ShuffleAB,
-                        use_tf32=SPCONV_ALLOW_TF32)
-
-                for desp in avail_desps:
-                    # print(desp, C, K, k, s, p, d)
-                    # desp.is_nvrtc = True
-                    inited = subm
-                    weight_tv.zero_()
-                    if subm:
-                        torch.mm(output_th.T, inp_th, out=weight_th[:, kv_center])
-
-                    for i, nhot in enumerate(indice_pair_num_cpu):
-                        if subm and i == kv_center:
-                            continue
-                        if subm and i > kv_center:
-                            nhot = indice_pair_num_cpu[kv - i - 1]
-                        if nhot <= 0:
-                            continue
-                        beta = 1.0 if inited else 0.0
-                        inp_indices = pair_in[i].slice_first_axis(0, nhot)
-                        out_indices = pair_out[i].slice_first_axis(0, nhot)
-                        a_inds = out_indices
-                        b_inds = inp_indices
-                        if SPCONV_CPP_GEMM:
-                            GEMM_CPP.run_with_tuned_result(
-                                GemmTuneResult(desp, tester.arch, 32),
-                                a,
-                                b,
-                                weight_tv.select(1, i),
-                                True,
-                                False,
-                                False,
-                                arch=arch,
-                                stream_int=stream,
-                                shuffle_type=ShuffleStrideType.ShuffleAB.value,
-                                a_inds=a_inds,
-                                b_inds=b_inds,
-                                c_inds=tv.Tensor(),
-                                hint=AlgoHint.BackwardWeight.value,
-                                alpha=1.0,
-                                beta=beta,
-                                force_nvrtc=force_nvrtc)
-
-                        else:
-                            GEMM.run_with_tuned_result(BestAlgoByProfile(desp, tester.arch, 32),
-                                                    a,
-                                                    b,
-                                                    weight_tv.select(1, i),
-                                                    True,
-                                                    False,
-                                                    False,
-                                                    arch=arch,
-                                                    stream=stream,
-                                                    shuffle_type=ShuffleStrideType.ShuffleAB,
-                                                    a_inds=a_inds,
-                                                    b_inds=b_inds,
-                                                    hint=AlgoHint.BackwardWeight.value,
-                                                    alpha=1.0,
-                                                    beta=beta,
-                                                    force_nvrtc=force_nvrtc)
-
-                    dw_my = weight_tv.cpu().numpy()
-                    if dtype != np.float16:
-                        error_norm = np.linalg.norm(dw_ref.reshape(-1) - dw_my.reshape(-1))
-                        assert error_norm < 1 * multipler, f"{desp}, {error_norm}"
-                    else:
-                        error_norm = np.linalg.norm(dw_ref.reshape(-1) - dw_my.reshape(-1))
-                        assert error_norm < 10 * multipler, f"{desp}, {error_norm}"
+                    print(desp, " \033[1;38;5;9m PASSED \033[0m ", desp.op_type, " of ", spk, f" with Nckg {output_tv.shape[0]} {C}, {K}, {group}")
 
 
 def test_all_algo_unit():

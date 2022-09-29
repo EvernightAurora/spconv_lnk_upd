@@ -22,6 +22,7 @@ from cumm.tensorview.gemm import ConvIterAlgo as ConvIterAlgoCpp
 from cumm.tensorview.gemm import ConvOpType as ConvOpTypeCpp
 from cumm.tensorview.gemm import ConvLayoutType as ConvLayoutTypeCpp
 from cumm.tensorview.gemm import ShuffleStrideType as ShuffleStrideTypeCpp
+from cumm.tensorview.gemm import ConvGroupMode as ConvGroupModeCpp
 
 from cumm.tensorview.gemm import ConvParams, GemmAlgoDesp, GemmParams
 from cumm.gemm.main import GemmAlgoParams, gen_gemm_kernels
@@ -88,6 +89,7 @@ def get_conv_algo_desp_from_param(p: ConvAlgoParams):
     desp.element_per_access_b = ker.input_spec.input_iter_b.element_per_acc
     desp.element_per_access_c = ker.output_spec.out_iter.element_per_acc
     desp.min_arch = ker.min_arch()
+    desp.group_mode = ConvGroupModeCpp(ker.group_mode.value)
     return desp
 
 
