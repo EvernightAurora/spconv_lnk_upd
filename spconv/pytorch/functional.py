@@ -205,13 +205,14 @@ class SparseImplicitGemmFunction(Function):
                 bias: Optional[torch.Tensor] = None,
                 act_alpha: float = 0.0,
                 act_beta: float = 0.0,
-                act_type: tv.gemm.Activation = tv.gemm.Activation.None_):
+                act_type: tv.gemm.Activation = tv.gemm.Activation.None_,
+                groups: int = 1):
         try:
             out, mask_out, mask_width = ops.implicit_gemm(
                 features, filters, pair_fwd, pair_mask_fwd_splits,
                 mask_argsort_fwd_splits, num_activate_out, masks, is_train,
                 is_subm, timer, fp32_accum, bias, act_alpha, act_beta,
-                act_type)
+                act_type, groups)
         except Exception as e:
             msg = "[Exception|implicit_gemm]"
             msg += f"feat={features.shape},w={filters.shape},pair={pair_fwd.shape},"
@@ -235,6 +236,7 @@ class SparseImplicitGemmFunction(Function):
         ctx.masks = masks
         ctx.is_subm = is_subm
         ctx.fp32_accum = fp32_accum
+        ctx.groups = groups
         return out
 
     @staticmethod
@@ -253,6 +255,7 @@ class SparseImplicitGemmFunction(Function):
         is_subm = ctx.is_subm
         timer = ctx.timer
         fp32_accum = ctx.fp32_accum
+        groups = ctx.groups
 
         try:
             input_bp, filters_bp = ops.implicit_gemm_backward(
@@ -270,7 +273,8 @@ class SparseImplicitGemmFunction(Function):
                 mask_width=mask_width,
                 is_subm=is_subm,
                 timer=timer,
-                fp32_accum=fp32_accum)
+                fp32_accum=fp32_accum,
+                groups=groups)
         except Exception as e:
             msg = "[Exception|implicit_gemm_backward]"
             msg += f"feat={features.shape},w={filters.shape},pair={pair_fwd.shape},"

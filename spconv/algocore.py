@@ -143,4 +143,5 @@ def get_conv_param_from_desp(desp: ConvAlgoDesp):
                                       desp.interleave_o)
     p.mask_sparse = desp.mask_sparse
     p.increment_k_first = desp.increment_k_first
+    p.group_mode = desp.group_mode
     return p

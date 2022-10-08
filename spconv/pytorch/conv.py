@@ -15,6 +15,7 @@
 import math
 import time
 import sys
+from tokenize import group
 from typing import List, Optional, Tuple, Union
 
 import numpy as np
@@ -56,7 +57,7 @@ class SparseConvolution(SparseModule):
                  stride: Union[int, List[int], Tuple[int, ...]] = 1,
                  padding: Union[int, List[int], Tuple[int, ...]] = 0,
                  dilation: Union[int, List[int], Tuple[int, ...]] = 1,
-                 groups: Union[int, List[int], Tuple[int, ...]] = 1,
+                 groups: int = 1,
                  bias: bool = True,
                  subm: bool = False,
                  output_padding: Union[int, List[int], Tuple[int, ...]] = 0,
@@ -313,14 +314,26 @@ class SparseConvolution(SparseModule):
                     }
                 }
         if self.conv1x1:
-            if FILTER_HWIO:
-                features = torch.mm(
-                    input.features,
-                    self.weight.view(self.out_channels, self.in_channels // self.groups).T)
-            else:
-                features = torch.mm(
-                    input.features,
-                    self.weight.view(self.in_channels // self.groups, self.out_channels))
+            if self.groups == 1:
+                if FILTER_HWIO:
+                    features = torch.mm(
+                        input.features,
+                        self.weight.view(self.out_channels, self.in_channels).T)
+                else:
+                    features = torch.mm(
+                        input.features,
+                        self.weight.view(self.in_channels, self.out_channels))
+            else:           # grouped gemm  downfall to batch gemm
+                if FILTER_HWIO:
+                    weight = self.weight.view(self.groups, self.out_channels // self.groups, self.in_channels // self.groups).permute((0, 2, 1))
+                else:
+                    weight = self.weight.view(self.in_channels // self.groups, self.groups, self.out_channels // self.groups).permute((1, 0, 2))
+                assert weight.shape[0] == self.groups       # (g, C/g,  K/g)
+                inp = input.features.view((-1, self.in_channels // self.groups, self.groups)).permute((2, 0, 1))
+                features_raw = torch.bmm(inp, weight)  # [g, N, k/G]
+                features = torch.cat([*features_raw], dim=1)
+                assert features.shape[1] == self.out_channels
+
 
             if self.bias is not None:
                 features += self.bias
@@ -344,6 +357,7 @@ class SparseConvolution(SparseModule):
             profile_ctx = input._timer.namespace(self._sparse_unique_name)
         with profile_ctx:
             if algo == ConvAlgo.Native:
+                assert self.groups == 1, "Not implemented for native"
                 datas = input.find_indice_pair(self.indice_key)
                 if datas is not None:
                     assert isinstance(datas, IndiceData)
@@ -556,7 +570,8 @@ class SparseConvolution(SparseModule):
                     bias_for_infer,
                     self.act_alpha,
                     self.act_beta,
-                    self.act_type)
+                    self.act_type,
+                    self.groups)
         if bias_for_training is not None:
             out_features += bias_for_training
         if input.benchmark:

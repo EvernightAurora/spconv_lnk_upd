@@ -936,7 +936,7 @@ class ConvTunerSimple(pccm.ParameterizedClass):
                           "int, int, int, int, int>"))
         self.add_typedef(
             "algo_cache_key_t", "std::tuple<int, int, int, int, "
-            "int, int, int, int>")
+            "int, int, int, int, int>")
 
         self.add_member("desps_", "std::vector<tv::gemm::ConvAlgoDesp>")
         self.add_member(
@@ -1056,22 +1056,12 @@ class ConvTunerSimple(pccm.ParameterizedClass):
                     continue;
                 }}
             }}
-            if (arch >= std::make_tuple(7, 0) && is_fp16){{
-                // skip simt fp16 kernels if we have tensor core
-                if (desp.algo == {pccm.literal(GemmAlgo.Simt.value)}){{
-                    continue;
-                }}
-                if (use_f32_as_accum){{
-                    if (desp.dacc == tv::float16){{
-                        continue;
-                    }}
-                }}
-            }}
             if (groups > 1) {{
                 if (desp.group_mode == tv::gemm::ConvGroupMode::kNone)
                     continue;
-                int C_per_group = inp.dim(1) / groups;
-                int K_per_group = out.dim(1) / groups;
+                int C_per_group = inp.dim(-1) / groups;
+                int K_per_group = out.dim(-1) / groups;
+                
                 if (!desp.support_grouped(C_per_group, K_per_group))
                     continue;
             }} else {{
@@ -1080,11 +1070,22 @@ class ConvTunerSimple(pccm.ParameterizedClass):
             }}
 
 
-            int ldi = inp.dim(-1);
+            int ldi = inp.dim(-1) / groups;
             int ldw = weight.dim(-1);
-            int ldo = out.dim(-1);
-
+            int ldo = out.dim(-1) / groups;
             bool mask_width_valid = true;
+
+            if (arch >= std::make_tuple(7, 0) && is_fp16){{
+                // skip simt fp16 kernels if we have tensor core
+                if (desp.algo == {pccm.literal(GemmAlgo.Simt.value)} && ldi >= 16 && ldo >= 16){{
+                    continue;
+                }}
+                if (use_f32_as_accum){{
+                    if (desp.dacc == tv::float16){{
+                        continue;
+                    }}
+                }}
+            }}
 
             if (desp.op_type == tv::gemm::ConvOpType::kBackwardWeight){{
                 TV_ASSERT_RT_ERR(mask_width > 0, "eroro");
@@ -1155,6 +1156,7 @@ class ConvTunerSimple(pccm.ParameterizedClass):
         code.arg("fp32_accum", "bool", "false")
         code.arg("num_run", "int", "5")
         code.arg("use_tf32", "bool", "true")
+        code.arg("groups", "int", "1")
 
         if CUMM_CPU_ONLY_BUILD:
             code.raw(f"TV_THROW_RT_ERR(\"not implemented for cpu!!!\")")
@@ -1169,7 +1171,7 @@ class ConvTunerSimple(pccm.ParameterizedClass):
         auto avail = get_all_available(inp, weight, output, layout_i, layout_w,
                                        layout_o, interleave_i, interleave_w, interleave_o,
                                        arch, op_type, mask_width,
-                                       auto_fp32_accum, fp32_accum, use_tf32);
+                                       auto_fp32_accum, fp32_accum, use_tf32, groups);
         inp = inp.clone();
         weight = weight.clone();
         output = output.clone();
@@ -1188,7 +1190,7 @@ class ConvTunerSimple(pccm.ParameterizedClass):
             }}
             params.conv_algo_desp = desp;
             params.input = inp;
-            params.weight = weight.view(channel_k, -1, channel_c);
+            params.weight = weight.view(channel_k, -1, channel_c / groups);
             params.output = output;
 
             params.mask_width = mask_width;
@@ -1199,6 +1201,7 @@ class ConvTunerSimple(pccm.ParameterizedClass):
             params.indices = indices;
             params.mask = mask;
             params.mask_output = mask_output;
+            params.groups = groups;
             // if (op_type_cpp == tv::gemm::ConvOpType::kBackwardWeight){{
             //     TV_ASSERT_RT_ERR(!mask_output.empty(), "error");
             // }}
@@ -1256,7 +1259,7 @@ class ConvTunerSimple(pccm.ParameterizedClass):
         }}
         algo_cache_key_t key;
         key = std::make_tuple(int(inp.dtype()), int(weight.dtype()), 
-            int(output.dtype()), channel_k, channel_c, std::get<0>(arch), std::get<1>(arch), mask_width);
+            int(output.dtype()), channel_k, channel_c, std::get<0>(arch), std::get<1>(arch), mask_width, groups);
         {{
             std::lock_guard<std::mutex> guard(mutex_);
 
@@ -1289,6 +1292,7 @@ class ConvTunerSimple(pccm.ParameterizedClass):
         code.arg("k, c", "int")
         code.arg("arch", "std::tuple<int, int>")
         code.arg("mask_width", "int", "-1")
+        code.arg("groups", "int", "1")
         if CUMM_CPU_ONLY_BUILD:
             code.raw(f"TV_THROW_RT_ERR(\"not implemented for cpu!!!\")")
             return code.ret("std::tuple<ConvTuneResult, bool>")
@@ -1300,7 +1304,7 @@ class ConvTunerSimple(pccm.ParameterizedClass):
         }}
         algo_cache_key_t key;
         key = std::make_tuple(i_dtype, w_dtype, o_dtype, k, c, 
-            std::get<0>(arch), std::get<1>(arch), mask_width);
+            std::get<0>(arch), std::get<1>(arch), mask_width, groups);
         ConvTuneResult res;
         bool exists = false;
         {{
@@ -1360,6 +1364,7 @@ class ConvTunerSimple(pccm.ParameterizedClass):
         code.arg("act_alpha", f"float", "0.0")
         code.arg("act_beta", f"float", "0.0")
         code.arg("act_type", f"tv::gemm::Activation", "tv::gemm::Activation::kNone", "cumm.tensorview.gemm.Activation = Activation.None_")
+        code.arg("groups", "int", "1")
 
         if CUMM_CPU_ONLY_BUILD:
             code.raw(f"TV_THROW_RT_ERR(\"not implemented for cpu!!!\")")
@@ -1382,7 +1387,7 @@ class ConvTunerSimple(pccm.ParameterizedClass):
         }}
         params.conv_algo_desp = desp;
         params.input = inp;
-        params.weight = weight.view(channel_k, -1, channel_c);
+        params.weight = weight.view(channel_k, -1, channel_c / groups);
         params.output = output;
         params.verbose = verbose;
         params.bias = bias;
@@ -1403,6 +1408,7 @@ class ConvTunerSimple(pccm.ParameterizedClass):
         params.mask_width = mask_width;
         params.mask_output = mask_output;
         params.reverse_mask = reverse_mask;
+        params.groups = groups;
 
         if (timer.enable()){{
             params.timer = timer;
@@ -2064,6 +2070,7 @@ class ConvGemmOps(pccm.ParameterizedClass):
         code.arg("act_beta", f"float", "0.0")
         code.arg("act_type", f"tv::gemm::Activation", "tv::gemm::Activation::kNone", "cumm.tensorview.gemm.Activation = Activation.None_")
         code.arg("use_tf32", "bool", "true")
+        code.arg("groups", "int", "1")
 
 
         if CUMM_CPU_ONLY_BUILD:
@@ -2077,10 +2084,10 @@ class ConvGemmOps(pccm.ParameterizedClass):
         uint32_t* mask_ptr = masks.data_ptr<uint32_t>();
         int num_mask = masks.dim(0);
         int out_channel = filters.dim(0);
-        int in_channel = filters.dim(-1);
+        int in_channel = filters.dim(-1) * groups;
         int num_split = pair_mask_fwd_splits.size();
         TV_ASSERT_RT_ERR(num_mask == num_split, "error");
-        filters = filters.view(out_channel, -1, in_channel);
+        filters = filters.view(out_channel, -1, in_channel / groups);
         tv::Tensor out_features;
         if (is_subm){{
             out_features = allocator.empty({pccm.literal(AllocKeys.OutFeatures)}, 
@@ -2101,7 +2108,7 @@ class ConvGemmOps(pccm.ParameterizedClass):
             int(features.dtype()),
             int(filters.dtype()),
             int(out_features.dtype()),
-            out_channel, in_channel, arch);
+            out_channel, in_channel, arch, groups);
         auto tune_res = std::get<0>(tuned_res_exist);
         auto exists = std::get<1>(tuned_res_exist);
         if (!exists){{
@@ -2125,7 +2132,8 @@ class ConvGemmOps(pccm.ParameterizedClass):
                 auto_fp32_accum,
                 fp32_accum,
                 5, // num_run
-                use_tf32);
+                use_tf32,
+                groups);
             tune_res = std::get<0>(tune_res_time);
         }}
 
@@ -2175,7 +2183,8 @@ class ConvGemmOps(pccm.ParameterizedClass):
                 bias,
                 act_alpha,
                 act_beta,
-                act_type);
+                act_type,
+                groups);
         }}
         // auto end_ev = tv::CUDAEvent();
         // end_ev.record(stream_int);
@@ -2210,6 +2219,7 @@ class ConvGemmOps(pccm.ParameterizedClass):
         code.arg("auto_fp32_accum", "bool", "true")
         code.arg("fp32_accum", "bool", "false")
         code.arg("use_tf32", "bool", "true")
+        code.arg("groups", "int", "1")
 
         if CUMM_CPU_ONLY_BUILD:
             code.raw(f"TV_THROW_RT_ERR(\"not implemented for cpu!!!\")")
@@ -2223,7 +2233,7 @@ class ConvGemmOps(pccm.ParameterizedClass):
         uint32_t* mask_ptr = masks.data_ptr<uint32_t>();
         int num_mask = masks.dim(0);
         int out_channel = filters.dim(0);
-        int in_channel = filters.dim(-1);
+        int in_channel = filters.dim(-1) * groups;
         int num_split = pair_mask_fwd_splits.size();
         TV_ASSERT_RT_ERR(num_mask == num_split, "error");
         filters = filters.view(out_channel, -1, in_channel);
@@ -2253,13 +2263,13 @@ class ConvGemmOps(pccm.ParameterizedClass):
             int(din.dtype()),
             int(filters.dtype()),
             int(out_bp.dtype()),
-            out_channel, in_channel, arch);
+            out_channel, in_channel, arch, -1, groups);
         auto wgrad_tuned_res_exist = conv_tuner.get_tuned_algo(
             kBackwardWeightInt,
             int(features.dtype()),
             int(dfilters.dtype()),
             int(out_bp.dtype()),
-            out_channel, in_channel, arch, mask_width);
+            out_channel, in_channel, arch, mask_width, groups);
 
         auto dgrad_tune_res = std::get<0>(dgrad_tuned_res_exist);
         auto dgrad_exists = std::get<1>(dgrad_tuned_res_exist);
@@ -2295,7 +2305,8 @@ class ConvGemmOps(pccm.ParameterizedClass):
                 auto_fp32_accum,
                 fp32_accum,
                 5, // num_run
-                use_tf32);
+                use_tf32,
+                groups);
             dgrad_tune_res = std::get<0>(tune_res_time);
         }}
         if (!wgrad_exists){{
@@ -2319,14 +2330,15 @@ class ConvGemmOps(pccm.ParameterizedClass):
                 auto_fp32_accum,
                 fp32_accum,
                 5, // num_run
-                use_tf32);
+                use_tf32,
+                groups);
             wgrad_tune_res = std::get<0>(tune_res_time);
         }}
         int ws_size = conv_tuner.query_workspace_size(wgrad_tune_res.algo_desp,
                                                wgrad_tune_res.splitk,
                                                kBackwardWeightInt,
                                                pair_fwd.dim(1), in_channel,
-                                               out_channel, kv);
+                                               out_channel, kv, groups);
         ExternalAllocator::guard_t workspace_guard;
         tv::Tensor workspace;
         if (ws_size > 0){{
@@ -2360,7 +2372,8 @@ class ConvGemmOps(pccm.ParameterizedClass):
                 stream_int,
                 tv::Tensor(), // workspace
                 false, // verbose
-                timer);
+                timer,
+                groups);
             
             conv_tuner.run_with_tuned_result(
                 wgrad_tune_res,
@@ -2377,7 +2390,8 @@ class ConvGemmOps(pccm.ParameterizedClass):
                 stream_int, 
                 workspace, // workspace
                 false, // verbose
-                timer);
+                timer,
+                groups);
         }}
 
         """)

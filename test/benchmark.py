@@ -234,6 +234,135 @@ class Net(nn.Module):
         return self.net(x)
 
 
+class NetGrouped(nn.Module):
+    def __init__(self, shape, algo):
+        super().__init__()
+        pool_algo = algo
+        # pool_algo = ConvAlgo.Native
+        self.net = spconv.SparseSequential(
+            spconv.SubMConv3d(3, 64, 3, bias=False, indice_key="c0",
+                              algo=algo),
+
+            spconv.SubMConv3d(64,
+                              64,
+                              3,
+                              bias=False,
+                              indice_key="c0",
+                              algo=algo,
+                              groups=2),
+
+            spconv.SparseMaxPool3d(2, 2, algo=pool_algo),
+            spconv.SubMConv3d(64,
+                              96,
+                              3,
+                              bias=False,
+                              indice_key="c1",
+                              algo=algo,
+                              groups=2),
+            spconv.SubMConv3d(96,
+                              96,
+                              3,
+                              bias=False,
+                              indice_key="c1",
+                              algo=algo,
+                              groups=3),
+
+            spconv.SparseMaxPool3d(2, 2, algo=pool_algo),
+            spconv.SubMConv3d(96,
+                              128,
+                              3,
+                              bias=False,
+                              indice_key="c2",
+                              algo=algo,
+                              groups=4),
+            spconv.SubMConv3d(128,
+                              128,
+                              3,
+                              bias=False,
+                              indice_key="c2",
+                              algo=algo,
+                              groups=4),
+
+            spconv.SparseMaxPool3d(2, 2, algo=pool_algo),
+            spconv.SubMConv3d(128,
+                              160,
+                              3,
+                              bias=False,
+                              indice_key="c3",
+                              algo=algo,
+                              groups=4),
+            spconv.SubMConv3d(160,
+                              160,
+                              3,
+                              bias=False,
+                              indice_key="c3",
+                              algo=algo,
+                              groups=10),
+
+            spconv.SparseMaxPool3d(2, 2, algo=pool_algo),
+            spconv.SubMConv3d(160,
+                              192,
+                              3,
+                              bias=False,
+                              indice_key="c4",
+                              algo=algo,
+                              groups=4),
+            spconv.SubMConv3d(192,
+                              192,
+                              3,
+                              bias=False,
+                              indice_key="c4",
+                              algo=algo,
+                              groups=6),
+
+            spconv.SparseMaxPool3d(2, 2, indice_key="m4", algo=pool_algo),
+
+            spconv.SubMConv3d(192,
+                              224,
+                              3,
+                              bias=False,
+                              indice_key="c5",
+                              algo=algo,
+                              groups=8),
+            spconv.SubMConv3d(224,
+                              224,
+                              3,
+                              bias=False,
+                              indice_key="c5",
+                              algo=algo,
+                              groups=2),
+
+            spconv.SparseMaxPool3d(2, 2, indice_key="m5", algo=pool_algo),
+            spconv.SubMConv3d(224,
+                              256,
+                              3,
+                              bias=False,
+                              indice_key="c6",
+                              algo=algo,
+                              groups=8),
+            spconv.SubMConv3d(256,
+                              256,
+                              3,
+                              bias=False,
+                              indice_key="c6",
+                              algo=algo,
+                              groups=16),
+
+        )
+        max_batch_size = 1
+
+        self.shape = shape
+
+    def forward(self, features, coors, batch_size, enable_timer: bool = False):
+        x = spconv.SparseConvTensor(features,
+                                    coors,
+                                    self.shape,
+                                    batch_size,
+                                    # self.grid,
+                                    enable_timer=enable_timer)
+        return self.net(x)
+
+
 class Net2(nn.Module):
     def __init__(self, shape, algo):
         super().__init__()
@@ -395,9 +524,9 @@ def main():
     np.random.seed(50051)
     torch.manual_seed(50051)
     # voxels, coors, spatial_shape = waymo_data(num_features=3)
-    with open(Path(__file__).parent / "data" / "test_spconv.pkl", "rb") as f:
-        (voxels, coors, spatial_shape) = pickle.load(f)
-    # voxels, coors, spatial_shape = waymo_data_large()
+    # with open(Path(__file__).parent / "data" / "test_spconv.pkl", "rb") as f:
+    #     (voxels, coors, spatial_shape) = pickle.load(f)
+    voxels, coors, spatial_shape = waymo_data_large()
     # breakpoint()
 
     print(spatial_shape)
@@ -433,7 +562,7 @@ def main():
     # MaskImpGemm: 51.0ms
     # MaskSplitImpGemm: 41.1ms
     # algo = None
-    net = Net(spatial_shape, algo).to(device).eval().to(dtype)# .train()
+    net = NetGrouped(spatial_shape, algo).to(device).eval().to(dtype)# .train()
     # net.load_state_dict(net.state_dict())
     spconv.assign_name_for_sparse_modules(net)
     print(coors_th.shape)

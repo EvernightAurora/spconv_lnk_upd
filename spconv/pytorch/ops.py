@@ -1455,7 +1455,8 @@ def implicit_gemm(features: torch.Tensor,
                   bias: Optional[torch.Tensor] = None,
                   act_alpha: float = 0.0,
                   act_beta: float = 0.0,
-                  act_type: tv.gemm.Activation = tv.gemm.Activation.None_):
+                  act_type: tv.gemm.Activation = tv.gemm.Activation.None_,
+                  groups: int = 1):
     stream = get_current_stream()
     bias_tv = tv.Tensor()
     if bias is not None:
@@ -1493,7 +1494,7 @@ def implicit_gemm(features: torch.Tensor,
             pair_mask_fwd_splits_tv, mask_argsort_fwd_splits_tv,
             num_activate_out, mask_tv, arch, is_train, is_subm, stream,
             timer_cpp, auto_fp32_accum, fp32_accum, bias_tv, act_alpha, act_beta, act_type,
-            use_tf32=constants.SPCONV_ALLOW_TF32)
+            use_tf32=constants.SPCONV_ALLOW_TF32, groups=groups)
         out_features = alloc.allocated[AllocKeys.OutFeatures]
         mask_output_fwd = alloc.allocated.get(AllocKeys.MaskOutputFwd, None)
         if is_train:
@@ -1510,7 +1511,7 @@ def implicit_gemm(features: torch.Tensor,
     # here filters is KRSC
     masks_ints = [m.item() for m in masks]
     out_channel = filters.shape[0]
-    in_channel = filters.shape[-1]
+    in_channel = filters.shape[-1] * groups
     num_split = len(pair_mask_fwd_splits)
     filters = filters.reshape(out_channel, -1, filters.shape[-1])
     kv = filters.shape[1]
@@ -1539,7 +1540,7 @@ def implicit_gemm(features: torch.Tensor,
 
     tune_res = CONV.get_tuned_algo(ConvOpType.kForward, features_tv.dtype,
                                    filters_tv.dtype, out_features_tv.dtype,
-                                   out_channel, in_channel, arch)
+                                   out_channel, in_channel, arch, groups=groups)
     if tune_res is None:
         tune_res, _ = CONV.tune_and_cache(
             ConvOpType.kForward,
@@ -1557,7 +1558,8 @@ def implicit_gemm(features: torch.Tensor,
             mask_filter=masks[0].item(),
             stream=stream,
             fp32_accum=fp32_accum,
-            use_tf32=constants.SPCONV_ALLOW_TF32)
+            use_tf32=constants.SPCONV_ALLOW_TF32,
+            groups=groups)
 
     mask_width = tune_res.algo_desp.tile_shape[0]
     if is_train:
@@ -1611,7 +1613,8 @@ def implicit_gemm(features: torch.Tensor,
                 bias=bias_tv,
                 act_type=act_type,
                 act_alpha=act_alpha,
-                act_beta=act_beta)
+                act_beta=act_beta,
+                groups=groups)
     # INT8_TEST = True
     # if INT8_TEST:
     #     if features.shape[1] % 32 != 0:
@@ -1713,7 +1716,8 @@ def implicit_gemm_backward(features: torch.Tensor,
                            mask_width: int,
                            is_subm: bool,
                            timer: CUDAKernelTimer = CUDAKernelTimer(False),
-                           fp32_accum: Optional[bool] = None):
+                           fp32_accum: Optional[bool] = None,
+                           groups: int = 1):
     # print(out_bp.mean(), out_bp.max(), out_bp.min())
     if features.dtype == torch.int8 or features.dtype == torch.qint8:
         raise NotImplementedError("work in progress")
@@ -1818,11 +1822,11 @@ def implicit_gemm_backward(features: torch.Tensor,
     dgrad_tune_res = CONV.get_tuned_algo(ConvOpType.kBackwardInput,
                                          din_tv.dtype, filters_tv.dtype,
                                          dout_tv.dtype, out_channel,
-                                         in_channel, arch)
+                                         in_channel, arch, groups=groups)
     wgrad_tune_res = CONV.get_tuned_algo(ConvOpType.kBackwardWeight,
                                          features_tv.dtype, dfilters_tv.dtype,
                                          dout_tv.dtype, out_channel,
-                                         in_channel, arch, mask_width)
+                                         in_channel, arch, mask_width, groups)
 
     if dgrad_tune_res is None:
         # TODO split mask maybe completely invalid
@@ -1848,7 +1852,8 @@ def implicit_gemm_backward(features: torch.Tensor,
                                                 mask_filter=masks[0].item(),
                                                 stream=stream,
                                                 fp32_accum=fp32_accum,
-                                                use_tf32=constants.SPCONV_ALLOW_TF32)
+                                                use_tf32=constants.SPCONV_ALLOW_TF32,
+                                                groups=groups)
     if wgrad_tune_res is None:
         wgrad_tune_res, _ = CONV.tune_and_cache(
             ConvOpType.kBackwardWeight,
@@ -1867,12 +1872,13 @@ def implicit_gemm_backward(features: torch.Tensor,
             mask_output=tv.Tensor(),
             mask_width=mask_width,
             stream=stream,
-            use_tf32=constants.SPCONV_ALLOW_TF32)
+            use_tf32=constants.SPCONV_ALLOW_TF32,
+            groups=groups)
     workspace_size = CONV.query_workspace_size(wgrad_tune_res.algo_desp,
                                                wgrad_tune_res.splitk,
                                                ConvOpType.kBackwardWeight,
                                                pair_fwd_tv.dim(1), in_channel,
-                                               out_channel, kv)
+                                               out_channel, kv, groups=groups)
     workspace = torch.Tensor()
 
     workspace_tv = tv.Tensor()
@@ -1904,7 +1910,8 @@ def implicit_gemm_backward(features: torch.Tensor,
                                        mask_filter=masks[j].item(),
                                        mask_width=-1,
                                        beta=beta,
-                                       stream=stream)
+                                       stream=stream,
+                                       groups=groups)
             # for backward weight, beta = 0 because each split
             # handle different kernel locations.
             # TODO remove D iterator in backward weight kernel
@@ -1923,7 +1930,8 @@ def implicit_gemm_backward(features: torch.Tensor,
                 mask_width=mask_width,
                 beta=0,
                 workspace=workspace_tv,
-                stream=stream)
+                stream=stream,
+                groups=groups)
 
     return (din, dfilters.reshape(filters_shape))
 

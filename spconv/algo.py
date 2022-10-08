@@ -36,7 +36,8 @@ from cumm.tensorview.gemm import ConvParams, GemmAlgoDesp, GemmParams
 from cumm import dtypes
 
 from spconv.constants import (NDIM_DONT_CARE, SPCONV_BWD_SPLITK,
-                              SPCONV_NVRTC_MODE, SPCONV_DEBUG_NVRTC_KERNELS)
+                              SPCONV_NVRTC_MODE, SPCONV_DEBUG_NVRTC_KERNELS,
+                              ALGO_PYTHON_OUTPUT_TUNE_DETAIL)
 from spconv.core import ALL_IMPGEMM_PARAMS, AlgoHint, ConvAlgo, ALL_NATIVE_PARAMS
 from spconv.core_cc.cumm.conv.main import ConvMainUnitTest
 from spconv.core_cc.cumm.gemm.main import GemmMainUnitTest
@@ -716,12 +717,6 @@ class SimpleConv:
                 if (desp.tensorop[0] > 0 and inp.dtype == tv.float32 
                         and weight.dtype == tv.float32 and out.dtype == tv.float32):
                     continue
-            if arch >= (7, 0) and is_fp16:
-                if desp.algo == GemmAlgo.Simt:
-                    continue
-                if use_f32_as_accum:
-                    if desp.dacc == tv.float16:
-                        continue
             if groups > 1:
                 if desp.group_mode.value == ConvGroupMode.kNone.value:
                     continue
@@ -737,6 +732,13 @@ class SimpleConv:
             ldw = weight.dim(-1)
             ldo = out.dim(-1) // groups
             mask_width_valid = True
+
+            if arch >= (7, 0) and is_fp16:
+                if desp.algo == GemmAlgo.Simt.value and ldi >= 16 and ldo >= 16 and groups == 1:
+                    continue
+                if use_f32_as_accum:
+                    if desp.dacc == tv.float16:
+                        continue
 
             if desp.op_type.value == ConvOpType.kBackwardWeight.value:
                 assert mask_width > 0
@@ -769,11 +771,12 @@ class SimpleConv:
                        k: int,
                        c: int,
                        arch: Tuple[int, int],
-                       mask_width: int = -1):
+                       mask_width: int = -1,
+                       groups: int = 1):
         if not op_type == ConvOpType.kBackwardWeight:
             # fwd and dgrad don't need
             mask_width = -1
-        key = (i_dtype, w_dtype, o_dtype, k, c, arch[0], arch[1], mask_width)
+        key = (i_dtype, w_dtype, o_dtype, k, c, arch[0], arch[1], mask_width, groups)
         if op_type == ConvOpType.kForward:
             return self.kc_forward_cache.get(key, None)
         elif op_type == ConvOpType.kBackwardInput:
@@ -842,10 +845,11 @@ class SimpleConv:
                        beta: float = 0.0,
                        stream: int = 0,
                        fp32_accum: Optional[bool] = None,
-                        use_tf32: bool = True):
+                        use_tf32: bool = True,
+                        groups: int = 1):
         avail = self.get_all_available(inp, weight, output, layout_i, layout_w,
                                        layout_o, arch, op_type, mask_width,
-                                       fp32_accum, use_tf32)
+                                       fp32_accum, use_tf32, groups=groups)
         inp = inp.clone()
         weight = weight.clone()
         output = output.clone()
@@ -864,7 +868,7 @@ class SimpleConv:
 
             params.conv_algo_desp = desp
             params.input = inp
-            params.weight = weight.view([channel_k, -1, channel_c])
+            params.weight = weight.view([channel_k, -1, channel_c // groups])
             params.output = output
 
             params.mask_width = mask_width
@@ -875,6 +879,7 @@ class SimpleConv:
             params.indices = indices
             params.mask = mask
             params.mask_output = mask_output
+            params.groups = groups
             # if op_type == ConvOpType.kBackwardWeight:
             #     assert not mask_output.empty()
             if op_type == ConvOpType.kBackwardInput:
@@ -917,7 +922,41 @@ class SimpleConv:
             # fwd and dgrad don't need
             mask_width = -1
         key = (inp.dtype, weight.dtype, output.dtype, channel_k, channel_c,
-               arch[0], arch[1], mask_width)
+               arch[0], arch[1], mask_width, groups)
+        if ALGO_PYTHON_OUTPUT_TUNE_DETAIL:
+            if op_type != ConvOpType.kBackwardWeight:
+                all = list(zip(avail, times))
+            else:
+                per = len(times) // len(avail)
+                all = [(avail[i], times[i*per:(i+1)*per]) for i in range(len(avail))]
+            print("problem size: ", end='')
+            if op_type == ConvOpType.kForward:
+                print(f"[{inp.shape[0]}, {output.shape[1]}, {np.prod(weight.shape[1:-1])} * {inp.shape[1] // groups}] with group {groups}")
+            elif op_type == ConvOpType.kBackwardInput:
+                print(f"[{inp.shape[0]}, {inp.shape[1] // groups}, {np.prod(weight.shape[1:-1])} * {output.shape[1]}] with group {groups}")
+            else:
+                print(f"[{output.shape[1]}, {np.prod(weight.shape[1:-1])} * {input.shape[1] // groups}, {inp.shape[0]}] with group {groups}")
+            print("\n".join([str(i) for i in all]))
+            print("select ", res.algo_desp, " spk ", res.splitk, " with time: ", min_time)
+
+            simts = [i for i in all if i[0].algo == GemmAlgo.Simt.value]
+            turings = [i for i in all if i[0].algo == GemmAlgo.Turing.value]
+            amperes = [i for i in all if i[0].algo == GemmAlgo.Ampere.value]
+            def key_func(i):
+                if type(i[1]) is list:
+                    return np.min(i[1])
+                return i[1]
+            simts = sorted(simts, key=key_func)
+            turings = sorted(turings, key=key_func)
+            amperes = sorted(amperes, key=key_func)
+            if simts:
+                print("SIMT best: ", simts[0])
+            if turings:
+                print("TURING best: ", turings[0])  
+            if amperes:
+                print("AMPERE best: ", amperes[0])
+            print("\n\n")
+
         with self.lock:
             if op_type == ConvOpType.kForward:
                 self.kc_forward_cache[key] = res
