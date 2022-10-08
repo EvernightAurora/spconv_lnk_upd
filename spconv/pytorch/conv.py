@@ -71,7 +71,8 @@ class SparseConvolution(SparseModule):
                  act_beta: float = 0,
                  name=None):
         super(SparseConvolution, self).__init__(name=name)
-        assert groups == 1, "don't support groups for now"
+        # assert groups == 1, "don't support groups for now"
+        assert in_channels % groups == 0 and out_channels % groups == 0, "i/o channels should be divisible by groups"
         self.ndim = ndim
         self.in_channels = in_channels
         self.out_channels = out_channels
@@ -122,15 +123,15 @@ class SparseConvolution(SparseModule):
             if FILTER_HWIO:
                 # RSCK
                 self.weight = Parameter(
-                    torch.Tensor(*self.kernel_size, in_channels, out_channels))
+                    torch.Tensor(*self.kernel_size, in_channels // self.groups, out_channels))
             else:
                 # RSKC
                 self.weight = Parameter(
-                    torch.Tensor(*self.kernel_size, out_channels, in_channels))
+                    torch.Tensor(*self.kernel_size, out_channels, in_channels // self.groups))
         else:
             # KRSC
             self.weight = Parameter(
-                torch.Tensor(out_channels, *self.kernel_size, in_channels))
+                torch.Tensor(out_channels, *self.kernel_size, in_channels // self.groups))
         if bias:
             self.bias = Parameter(torch.Tensor(out_channels))
         else:
@@ -308,17 +309,18 @@ class SparseConvolution(SparseModule):
                         "transposed": self.transposed,
                         "input_channels": self.in_channels,
                         "out_channels": self.out_channels,
+                        "groups": self.groups
                     }
                 }
         if self.conv1x1:
             if FILTER_HWIO:
                 features = torch.mm(
                     input.features,
-                    self.weight.view(self.out_channels, self.in_channels).T)
+                    self.weight.view(self.out_channels, self.in_channels // self.groups).T)
             else:
                 features = torch.mm(
                     input.features,
-                    self.weight.view(self.in_channels, self.out_channels))
+                    self.weight.view(self.in_channels // self.groups, self.out_channels))
 
             if self.bias is not None:
                 features += self.bias

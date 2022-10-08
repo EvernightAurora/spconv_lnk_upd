@@ -334,8 +334,8 @@ def _test_impgemm_conv_cuda(subm: bool):
     test_case = TestCase()
     # in_channels = [32]
     # out_channels = [32, 48, 64]
-    in_channels_per = [8, 16, 32, 64]
-    out_channels_per = [8, 16, 32, 96]
+    in_channels_per = [1, 2, 4, 8, 16, 24, 64]
+    out_channels_per = [1, 2, 4, 8, 16, 40, 96]
     # in_channels = [32]
     # out_channels = [32]
 
@@ -345,7 +345,7 @@ def _test_impgemm_conv_cuda(subm: bool):
         strides = [1]
         paddings = [0]
         dilations = [1]
-        groups = [2, 3, 4, 6, 11]
+        groups = [2, 3, 6, 11, 16, 32]
     else:
         ksizes = [2, 3]
         strides = [1, 2, 3]
@@ -595,7 +595,7 @@ def _test_impgemm_conv_cuda(subm: bool):
                     else:
                         error_norm = np.linalg.norm(din_ref.reshape(-1) - din_my.reshape(-1))
                         assert error_norm < 10 * multipler, f"{desp}, {error_norm}, {k}, {s}, {p}, {d}"
-                print(desp, " \033[1;38;5;9m PASSED \033[0m ", op_type, f" with ckg {C}, {K}, {group}")
+                print(desp, " \033[1;38;5;9m PASSED \033[0m ", op_type, f" with cikig {C_i}, {K_i}, {group}")
         inp_tv, weight_tv, output_tv = tester.get_operands(ConvOpType.kBackwardWeight)
         for spk in SPK_SET:
             for mask_width, mask_output in mask_width_to_mask_out_fwd.items():
@@ -676,7 +676,7 @@ def _test_impgemm_conv_cuda(subm: bool):
                         if (error_norm > 5):
                             print(f"{desp}, Error={error_norm}, {spk}")
                         assert error_norm < 10 * multipler
-                    print(desp, " \033[1;38;5;9m PASSED \033[0m ", desp.op_type, " of ", spk, f" with Nckg {output_tv.shape[0]} {C}, {K}, {group}")
+                    print(desp, " \033[1;38;5;9m PASSED \033[0m ", desp.op_type, " of ", spk, f" with Ncikig {output_tv.shape[0]} {C_i}, {K_i}, {group}")
 
 
 def test_all_algo_unit():

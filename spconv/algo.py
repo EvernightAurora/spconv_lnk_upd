@@ -784,11 +784,11 @@ class SimpleConv:
 
     def query_workspace_size(self, desp: ConvAlgoDesp, splitk: int,
                              op_type: ConvOpType, N: int, C: int, K: int,
-                             kv: int):
+                             kv: int, groups: int):
         mnk = ConvMainUnitTest.extract_mnk(op_type.value, N, C, K, kv, -1, -1,
                                            True)
         return desp.query_conv_workspace_size(mnk[0], mnk[1], mnk[2], splitk,
-                                              kv)
+                                              kv, groups)
 
     def _compile_nvrtc_module(self, desp: ConvAlgoDesp):
         params = algocore.get_conv_param_from_desp(desp)

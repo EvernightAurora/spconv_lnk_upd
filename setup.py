@@ -153,7 +153,7 @@ if disable_jit is not None and disable_jit == "1":
     }
     from cumm.gemm.main import GemmMainUnitTest
     from spconv.core import SHUFFLE_SIMT_PARAMS, SHUFFLE_VOLTA_PARAMS, SHUFFLE_TURING_PARAMS, SHUFFLE_AMPERE_PARAMS
-    from spconv.core import IMPLGEMM_SIMT_PARAMS, IMPLGEMM_VOLTA_PARAMS, IMPLGEMM_TURING_PARAMS, IMPLGEMM_AMPERE_PARAMS
+    from spconv.core import IMPLGEMM_SIMT_PARAMS, IMPLGEMM_VOLTA_PARAMS, IMPLGEMM_TURING_PARAMS, IMPLGEMM_AMPERE_PARAMS, IMPLGEMM_GROUPED_PARAMS
     from cumm.conv.main import ConvMainUnitTest
     from cumm.constants import CUMM_CPU_ONLY_BUILD
     from spconv.csrc.sparse.all import SpconvOps
@@ -166,7 +166,8 @@ if disable_jit is not None and disable_jit == "1":
     from spconv.csrc.sparse.inference import InferenceOps
     all_shuffle = SHUFFLE_SIMT_PARAMS + SHUFFLE_VOLTA_PARAMS + SHUFFLE_TURING_PARAMS + SHUFFLE_AMPERE_PARAMS
     all_imp = (IMPLGEMM_SIMT_PARAMS + IMPLGEMM_VOLTA_PARAMS +
-               IMPLGEMM_TURING_PARAMS + IMPLGEMM_AMPERE_PARAMS)
+               IMPLGEMM_TURING_PARAMS + IMPLGEMM_AMPERE_PARAMS +
+               IMPLGEMM_GROUPED_PARAMS)
     all_shuffle = list(filter(lambda x: not x.is_nvrtc, all_shuffle))
     all_imp = list(filter(lambda x: not x.is_nvrtc, all_imp))
 
