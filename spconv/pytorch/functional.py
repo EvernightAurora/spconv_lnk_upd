@@ -286,7 +286,7 @@ class SparseImplicitGemmFunction(Function):
                  mask_argsort_bwd_splits, masks))
             raise e
 
-        None_9 = [None] * 16
+        None_9 = [None] * 17
         return (input_bp, filters_bp, *None_9)
 
 

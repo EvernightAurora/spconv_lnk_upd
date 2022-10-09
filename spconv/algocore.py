@@ -29,7 +29,7 @@ from cumm.gemm.main import GemmAlgoParams, gen_gemm_kernels
 from cumm.conv.main import ConvAlgoParams, ConvIterAlgo, gen_gemm_kernels as gen_conv_kernels
 from cumm import dtypes
 from cumm.conv.bases import (NCHW, NHWC, ConvIterAlgo, ConvLayout,
-                             ConvLayoutType, ConvMode, ConvOpType)
+                             ConvLayoutType, ConvMode, ConvOpType, ConvGroupMode)
 from cumm.gemm.core import MetaArray
 from cumm.gemm.algospec import TensorOp
 
@@ -125,7 +125,7 @@ def get_gemm_param_from_desp(desp: GemmAlgoDesp):
     _assign_gemm_params(desp, p)
     return p
 
-
+#   trans c type AlgoDesp to python type AlgoParams
 def get_conv_param_from_desp(desp: ConvAlgoDesp):
     p = ConvAlgoParams(desp.ndim, ConvOpType.kForward, ConvIterAlgo.Optimized,
                        (0, 0, 0), (0, 0, 0), 0, "s8,s8,s8,s8,s8", NHWC, NHWC, NHWC,
@@ -143,5 +143,5 @@ def get_conv_param_from_desp(desp: ConvAlgoDesp):
                                       desp.interleave_o)
     p.mask_sparse = desp.mask_sparse
     p.increment_k_first = desp.increment_k_first
-    p.group_mode = desp.group_mode
+    p.group_mode = ConvGroupMode(desp.group_mode.value)
     return p

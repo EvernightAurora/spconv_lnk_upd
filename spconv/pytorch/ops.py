@@ -1775,7 +1775,7 @@ def implicit_gemm_backward(features: torch.Tensor,
             mask_argsort_fwd_splits_tv, mask_argsort_bwd_splits_tv,
             mask_output_fwd_tv, mask_tv, arch, mask_width, is_subm, stream,
             timer_cpp, auto_fp32_accum, fp32_accum,
-            use_tf32=constants.SPCONV_ALLOW_TF32)
+            use_tf32=constants.SPCONV_ALLOW_TF32, groups=groups)
         din = alloc.allocated[AllocKeys.DIn]
         dfilters = alloc.allocated[AllocKeys.DFilters]
         return din, dfilters
@@ -1783,7 +1783,7 @@ def implicit_gemm_backward(features: torch.Tensor,
     # here filters is KRSC
     filters_shape = filters.shape
     out_channel = filters.shape[0]
-    in_channel = filters.shape[-1]
+    in_channel = filters.shape[-1] * groups
     num_split = len(pair_mask_fwd_splits)
     if is_subm:
         din = torch.empty_like(features)

@@ -931,11 +931,11 @@ class SimpleConv:
                 all = [(avail[i], times[i*per:(i+1)*per]) for i in range(len(avail))]
             print("problem size: ", end='')
             if op_type == ConvOpType.kForward:
-                print(f"[{inp.shape[0]}, {output.shape[1]}, {np.prod(weight.shape[1:-1])} * {inp.shape[1] // groups}] with group {groups}")
+                print(f"FWD: [{inp.shape[0]}, {output.shape[1]}, {np.prod(weight.shape[1:-1])} * {inp.shape[1] // groups}] with group {groups}")
             elif op_type == ConvOpType.kBackwardInput:
-                print(f"[{inp.shape[0]}, {inp.shape[1] // groups}, {np.prod(weight.shape[1:-1])} * {output.shape[1]}] with group {groups}")
+                print(f"BWDI: [{inp.shape[0]}, {inp.shape[1] // groups}, {np.prod(weight.shape[1:-1])} * {output.shape[1]}] with group {groups}")
             else:
-                print(f"[{output.shape[1]}, {np.prod(weight.shape[1:-1])} * {input.shape[1] // groups}, {inp.shape[0]}] with group {groups}")
+                print(f"BWDW: [{output.shape[1]}, {np.prod(weight.shape[1:-1])} * {inp.shape[1] // groups}, {inp.shape[0]}] with group {groups}")
             print("\n".join([str(i) for i in all]))
             print("select ", res.algo_desp, " spk ", res.splitk, " with time: ", min_time)
 

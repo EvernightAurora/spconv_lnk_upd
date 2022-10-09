@@ -2108,7 +2108,7 @@ class ConvGemmOps(pccm.ParameterizedClass):
             int(features.dtype()),
             int(filters.dtype()),
             int(out_features.dtype()),
-            out_channel, in_channel, arch, groups);
+            out_channel, in_channel, arch, -1, groups);
         auto tune_res = std::get<0>(tuned_res_exist);
         auto exists = std::get<1>(tuned_res_exist);
         if (!exists){{
@@ -2236,7 +2236,7 @@ class ConvGemmOps(pccm.ParameterizedClass):
         int in_channel = filters.dim(-1) * groups;
         int num_split = pair_mask_fwd_splits.size();
         TV_ASSERT_RT_ERR(num_mask == num_split, "error");
-        filters = filters.view(out_channel, -1, in_channel);
+        filters = filters.view(out_channel, -1, in_channel / groups);
         int kv = filters.dim(1);
         tv::Tensor din;
         if (is_subm){{
@@ -2248,7 +2248,7 @@ class ConvGemmOps(pccm.ParameterizedClass):
         }}
         tv::Tensor dfilters = allocator.zeros({pccm.literal(AllocKeys.DFilters)}, 
             filters_shape_vec, filters.dtype(), filters.device(), stream_int);
-        dfilters = dfilters.view(out_channel, -1, in_channel);
+        dfilters = dfilters.view(out_channel, -1, in_channel / groups);
 
         constexpr auto kForwardInt = static_cast<int>(tv::gemm::ConvOpType::kForward);
         constexpr auto kBackwardInputInt = static_cast<int>(tv::gemm::ConvOpType::kBackwardInput);
@@ -2373,6 +2373,7 @@ class ConvGemmOps(pccm.ParameterizedClass):
                 tv::Tensor(), // workspace
                 false, // verbose
                 timer,
+                false, tv::Tensor(), 0., 0.,tv::gemm::Activation::kNone,
                 groups);
             
             conv_tuner.run_with_tuned_result(
@@ -2391,6 +2392,7 @@ class ConvGemmOps(pccm.ParameterizedClass):
                 workspace, // workspace
                 false, // verbose
                 timer,
+                false, tv::Tensor(), 0., 0.,tv::gemm::Activation::kNone,
                 groups);
         }}
 

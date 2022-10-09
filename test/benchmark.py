@@ -23,6 +23,7 @@ from spconv.core import ConvAlgo
 
 import spconv.pytorch as spconv
 from spconv.utils import Point2VoxelCPU3d
+from tqdm import tqdm
 
 # torch.backends.cudnn.enabled = False
 def waymo_data(batch_size=1, num_features=-1):
@@ -235,9 +236,15 @@ class Net(nn.Module):
 
 
 class NetGrouped(nn.Module):
-    def __init__(self, shape, algo):
+    def __init__(self, shape, algo, gid=0):
         super().__init__()
         pool_algo = algo
+        gps = [
+            [2, 2, 2, 2, 2, 2, 2, 2, 2, 8, 2, 8, 16],
+            [4, 4, 3, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4],
+            [8, 8, 4, 8, 8, 8, 8, 8, 6, 2, 8, 2, 2],
+            [16,16,8, 16,16,16,10, 16, 8,16,16,16, 8]
+        ]
         # pool_algo = ConvAlgo.Native
         self.net = spconv.SparseSequential(
             spconv.SubMConv3d(3, 64, 3, bias=False, indice_key="c0",
@@ -249,7 +256,7 @@ class NetGrouped(nn.Module):
                               bias=False,
                               indice_key="c0",
                               algo=algo,
-                              groups=2),
+                              groups=gps[gid][0]),
 
             spconv.SparseMaxPool3d(2, 2, algo=pool_algo),
             spconv.SubMConv3d(64,
@@ -258,14 +265,14 @@ class NetGrouped(nn.Module):
                               bias=False,
                               indice_key="c1",
                               algo=algo,
-                              groups=2),
+                              groups=gps[gid][1]),
             spconv.SubMConv3d(96,
                               96,
                               3,
                               bias=False,
                               indice_key="c1",
                               algo=algo,
-                              groups=3),
+                              groups=gps[gid][2]),
 
             spconv.SparseMaxPool3d(2, 2, algo=pool_algo),
             spconv.SubMConv3d(96,
@@ -274,14 +281,14 @@ class NetGrouped(nn.Module):
                               bias=False,
                               indice_key="c2",
                               algo=algo,
-                              groups=4),
+                              groups=gps[gid][3]),
             spconv.SubMConv3d(128,
                               128,
                               3,
                               bias=False,
                               indice_key="c2",
                               algo=algo,
-                              groups=4),
+                              groups=gps[gid][4]),
 
             spconv.SparseMaxPool3d(2, 2, algo=pool_algo),
             spconv.SubMConv3d(128,
@@ -290,14 +297,14 @@ class NetGrouped(nn.Module):
                               bias=False,
                               indice_key="c3",
                               algo=algo,
-                              groups=4),
+                              groups=gps[gid][5]),
             spconv.SubMConv3d(160,
                               160,
                               3,
                               bias=False,
                               indice_key="c3",
                               algo=algo,
-                              groups=10),
+                              groups=gps[gid][6]),
 
             spconv.SparseMaxPool3d(2, 2, algo=pool_algo),
             spconv.SubMConv3d(160,
@@ -306,14 +313,14 @@ class NetGrouped(nn.Module):
                               bias=False,
                               indice_key="c4",
                               algo=algo,
-                              groups=4),
+                              groups=gps[gid][7]),
             spconv.SubMConv3d(192,
                               192,
                               3,
                               bias=False,
                               indice_key="c4",
                               algo=algo,
-                              groups=6),
+                              groups=gps[gid][8]),
 
             spconv.SparseMaxPool3d(2, 2, indice_key="m4", algo=pool_algo),
 
@@ -323,14 +330,14 @@ class NetGrouped(nn.Module):
                               bias=False,
                               indice_key="c5",
                               algo=algo,
-                              groups=8),
+                              groups=gps[gid][9]),
             spconv.SubMConv3d(224,
                               224,
                               3,
                               bias=False,
                               indice_key="c5",
                               algo=algo,
-                              groups=2),
+                              groups=gps[gid][10]),
 
             spconv.SparseMaxPool3d(2, 2, indice_key="m5", algo=pool_algo),
             spconv.SubMConv3d(224,
@@ -339,14 +346,14 @@ class NetGrouped(nn.Module):
                               bias=False,
                               indice_key="c6",
                               algo=algo,
-                              groups=8),
+                              groups=gps[gid][11]),
             spconv.SubMConv3d(256,
                               256,
                               3,
                               bias=False,
                               indice_key="c6",
                               algo=algo,
-                              groups=16),
+                              groups=gps[gid][12]),
 
         )
         max_batch_size = 1
@@ -562,7 +569,7 @@ def main():
     # MaskImpGemm: 51.0ms
     # MaskSplitImpGemm: 41.1ms
     # algo = None
-    net = NetGrouped(spatial_shape, algo).to(device).eval().to(dtype)# .train()
+    net = NetGrouped(spatial_shape, algo, 0).to(device).eval().to(dtype)# .train()
     # net.load_state_dict(net.state_dict())
     spconv.assign_name_for_sparse_modules(net)
     print(coors_th.shape)
@@ -577,7 +584,7 @@ def main():
     times = []
     show_metrics = False
     with torch.no_grad():
-        for i in range(100):
+        for i in tqdm(range(100)):
             # print("------------")
             with tv.measure_duration() as measure:
                 out_nograd = net(voxels_th, coors_th, 1, show_metrics)
@@ -604,16 +611,17 @@ def main():
     # net.load_state_dict(state)
     # breakpoint()
     print("spconv time", np.mean(times[10:]))
-    # times = []
+    times = []
+    net.train()
 
-    # for i in range(10):
-    #     out = net(voxels_th, coors_th, 1)
-    #     print("------------")
-    #     # torch.cuda.synchronize()
-    #     # t = time.time()
-    #     out.features.backward(dout_t)
-    #     # torch.cuda.synchronize()
-    #     # times.append(time.time() - t)
+    for i in range(10):
+        out = net(voxels_th, coors_th, 1)
+        print("------------")
+        # torch.cuda.synchronize()
+        # t = time.time()
+        out.features.backward(dout_t)
+        # torch.cuda.synchronize()
+        # times.append(time.time() - t)
 
     # # # print((net.grid == -1).float().sum(), net.grid.numel())
     # # # print("spconv time", time.time() - t)
