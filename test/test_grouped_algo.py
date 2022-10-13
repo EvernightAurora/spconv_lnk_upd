@@ -107,8 +107,9 @@ def grouped_conv_gemm_ref(a, b, op_type, groups):
 class SparseConvTesterGrouped:
     def __init__(self, algo: ConvAlgo, subm: bool, shape: List[int], bs: int, dtype: np.dtype, N: int, K: int, C: int, 
         ksize: int, stride: int, padding: int, dilation: int, check_bias: bool = False, check_act: bool = False,
-        groups: int = 1) -> None:
+        groups: int = 1, ranged_weight: bool = True) -> None:
         ndim = 3
+        self.ranged_weight = ranged_weight
         transpose = False
         self.shape = shape 
         self.bs = bs 
@@ -219,7 +220,10 @@ class SparseConvTesterGrouped:
             self.inp = np.random.uniform(-1, 1, size=[
                 voxels_np.shape[0], C
             ]).astype(dtype)
-            self.weight = np.random.uniform(-1, 1, size=[K, *self.ksize, C // groups]).astype(dtype)
+            if self.ranged_weight:
+                self.weight = (1 + np.arange(K * C // groups * np.prod(self.ksize))).astype(dtype).reshape([K, *self.ksize, C // groups])
+            else:
+                self.weight = np.random.uniform(-1, 1, size=[K, *self.ksize, C // groups]).astype(dtype)
             self.output = np.random.uniform(-1, 1, size=[
                 self.out_inds.shape[0], K
             ]).astype(dtype)
@@ -316,7 +320,7 @@ class SparseConvTesterGrouped:
             output_tv = torch.from_numpy(self.output).cuda()
         return inp_tv, weight_tv, output_tv
 
-def _test_impgemm_conv_cuda(subm: bool):
+def _test_impgemm_singlegrouped_conv_cuda(subm: bool):
     ndim = 3
     np.random.seed(50004)
     dtype_to_tol = {
@@ -679,12 +683,375 @@ def _test_impgemm_conv_cuda(subm: bool):
                     print(desp, " \033[1;38;5;9m PASSED \033[0m ", desp.op_type, " of ", spk, f" with Ncikig {output_tv.shape[0]} {C_i}, {K_i}, {group}")
 
 
+def _test_impgemm_depthwise_conv_cuda(subm: bool):
+    ndim = 3
+    np.random.seed(50004)
+    dtype_to_tol = {
+        np.float32: (1e-2, 1e-2),
+        np.float16: (1e-2, 1e-2),
+        np.int8: (1e-4, 1e-4),
+    }
+    device = torch.device("cuda:0")
+    shapes = [[9, 8, 7]]
+    batchsizes = [1]
+    dtypes = [np.float16]
+    # dtypes = [np.float16]
+
+    # dtypes = [np.int8]
+    test_case = TestCase()
+    # in_channels = [32]
+    # out_channels = [32, 48, 64]
+    channels = [2, 3, 4, 6, 8, 11, 14, 20, 100, 200, 300]
+    # in_channels = [32]
+    # out_channels = [32]
+
+    multiple_base = 16
+    if subm:
+        ksizes = [1]
+        strides = [1]
+        paddings = [0]
+        dilations = [1]
+    else:
+        ksizes = [2, 3]
+        strides = [1, 2, 3]
+        paddings = [0, 1]
+        dilations = [1, 2]
+
+    algos = [
+        # ConvAlgo.MaskSplitImplicitGemm,
+        ConvAlgo.MaskImplicitGemm,
+    ]
+    arch = torch.cuda.get_device_capability()
+    force_nvrtc = False
+    for shape, bs, CK, k, s, p, d, algo, dtype in tqdm.tqdm(params_grid(
+            shapes, batchsizes, channels, ksizes,
+            strides, paddings, dilations, algos, dtypes)):
+        group = CK
+        C = CK
+        K = CK
+        SPK_SET = [1, 4, 16, 64]
+        # if K <= 32 or K % 32 != 0:
+        #     SPK_SET = [1]
+        shape_prod = np.prod(shape)
+        num_batch = np.random.randint(int(0.2 * shape_prod), int(0.7 * shape_prod))
+        # if C_i % 32:
+        #     SPK_SET = [1]
+        # C = np.random.randint(int(0.3 * C), int(0.7 * C))
+        # K = np.random.randint(int(0.3 * K), int(0.7 * K))
+        multipler = max(C, K) / multiple_base
+        multipler = max(multipler, 1.0)
+        # print(num_batch)
+        tester = SparseConvTesterGrouped(algo, subm, shape, bs, dtype, num_batch, K, C, k, s, p, d, 
+                                check_bias=True, check_act=True, groups=group, ranged_weight=False)
+        bias = None
+        act = tv.gemm.Activation.None_
+        if tester.check_bias:
+            bias = tv.from_numpy(tester.bias).cuda()
+        atol, rtol = dtype_to_tol[dtype]
+        mask_width_to_mask_out_fwd: Dict[int, torch.Tensor] = {}
+        mask_width_to_mask_out_bwd: Dict[int, torch.Tensor] = {}
+        op_types = [ConvOpType.kForward, ConvOpType.kBackwardInput]
+        spk = 1
+        for op_type in op_types:
+            inp_tv, weight_tv, output_tv = tester.get_operands(op_type)
+            if SPCONV_CPP_GEMM:
+                avail_desps = CONV_CPP.get_all_available(inp_tv, weight_tv, output_tv, 
+                    NHWC.layout_type.value, NHWC.layout_type.value, 
+                    NHWC.layout_type.value, NHWC.interleave, NHWC.interleave, NHWC.interleave, arch, op_type.value, -1, True, False,
+                        use_tf32=SPCONV_ALLOW_TF32, groups=group)
+            else:
+                avail_desps = CONV.get_all_available(inp_tv, weight_tv, output_tv, NHWC, NHWC, NHWC, arch, op_type, -1,
+                        use_tf32=SPCONV_ALLOW_TF32, groups=group)
+            if op_type == ConvOpType.kForward and tester.check_act:
+                act = tv.gemm.Activation.ReLU
+            else:
+                act = tv.gemm.Activation.None_
+            if not avail_desps:
+                print("Not supply for ", op_type, " Depthwise")
+            # print( "avail: ", avail_desps)
+            for desp in avail_desps:
+                if not subm:
+                    if op_type == ConvOpType.kForward:
+                        output_tv.zero_()
+                    else:
+                        inp_tv.zero_()
+                # this algo must success
+                mask_width = desp.tile_shape[0]
+                # if mask_width != 32:
+                #     continue
+                if mask_width not in mask_width_to_mask_out_fwd:
+                    mask_width_to_mask_out_fwd[mask_width] = torch.zeros([2, div_up(tester.out_inds.shape[0], mask_width)],
+                                      dtype=torch.int32,
+                                      device=tester.device)
+                mask_output_fwd = mask_width_to_mask_out_fwd[mask_width]
+                is_fwd = desp.op_type.value == ConvOpType.kForward.value
+                bias_cur = bias 
+                if op_type != ConvOpType.kForward:
+                    bias_cur = None
+                if subm:
+                    if desp.op_type.value == ConvOpType.kForward.value:
+                        indice_pairs = tester.pair_fwd
+                    elif desp.op_type.value == ConvOpType.kBackwardInput.value:
+                        indice_pairs = tester.pair_bwd
+                    else:
+                        indice_pairs = tester.pair_fwd
+                    mask_output = mask_output_fwd
+                    # print([bin(x.item()) for x in masks])
+                    for j in range(tester.num_split):
+                        beta = 1 if j > 0 else 0
+                        if bias_cur is not None:
+                            beta = 1
+                        if j > 0:
+                            bias_cur = None
+                        mask_filter = tester.masks[j].item()
+                        reverse_mask = False
+                        if desp.op_type.value == ConvOpType.kBackwardWeight.value:
+                            mask_op = mask_output[j]
+                        else:
+                            mask_op = tester.pair_mask_fwd_splits[j]
+                        if desp.op_type.value == ConvOpType.kBackwardInput.value:
+                            reverse_mask = True
+                        mask_output_run = torch_tensor_to_tv(mask_output[j], dtype=tv.uint32)
+                        if desp.op_type.value == ConvOpType.kBackwardWeight.value:
+                            mask_output_run = tv.Tensor()
+                        # force_nvrtc = desp.op_type.value == ConvOpType.kBackwardInput.value
+                        # if force_nvrtc:
+                        #     desp.is_nvrtc = True
+                        # print(force_nvrtc, desp.op_type, op_type)
+                        if SPCONV_CPP_GEMM:
+
+                            CONV_CPP.run_with_tuned_result(
+                                ConvTuneResult(desp, tester.arch, spk),
+                                desp.op_type.value,
+                                inp_tv,
+                                weight_tv,
+                                output_tv,
+                                torch_tensor_to_tv(mask_op, dtype=tv.uint32),
+                                torch_tensor_to_tv(tester.mask_argsort_fwd_splits[j]),
+                                mask_output_run,
+                                torch_tensor_to_tv(indice_pairs),
+                                reverse_mask,
+                                mask_filter=mask_filter,
+                                mask_width=mask_width,
+                                beta=beta,
+                                verbose=False,
+                                force_nvrtc=force_nvrtc,
+                                bias=bias_cur if is_fwd and bias_cur is not None else tv.Tensor(),
+                                act_type=act,
+                                groups=group,
+                            )
+                        else:
+                            CONV.run_with_tuned_result(
+                                BestConvAlgoByProfile(desp, tester.arch, spk),
+                                desp.op_type.value,
+                                inp_tv,
+                                weight_tv,
+                                output_tv,
+                                torch_tensor_to_tv(mask_op, dtype=tv.uint32),
+                                torch_tensor_to_tv(tester.mask_argsort_fwd_splits[j]),
+                                mask_output_run,
+                                torch_tensor_to_tv(indice_pairs),
+                                reverse_mask,
+                                mask_filter=mask_filter,
+                                mask_width=mask_width,
+                                beta=beta,
+                                verbose=False,
+                                force_nvrtc=force_nvrtc,
+                                bias=bias_cur if is_fwd else None,
+                                act_type=act,
+                                groups=group,
+                            )
+
+                else:
+                    if mask_width not in mask_width_to_mask_out_bwd:
+                        mask_width_to_mask_out_bwd[mask_width] = torch.zeros([2, div_up(tester.indices_np.shape[0], mask_width)],
+                                        dtype=torch.int32,
+                                        device=tester.device)
+                    mask_output_bwd = mask_width_to_mask_out_bwd[mask_width]
+
+                    if desp.op_type.value == ConvOpType.kForward.value:
+                        indice_pairs = tester.pair_fwd  # inp -> out
+                        mask_ops = tester.pair_mask_fwd_splits
+                        mask_argsorts = tester.mask_argsort_fwd_splits
+                        mask_output = mask_output_fwd
+                    elif desp.op_type.value == ConvOpType.kBackwardInput.value:
+                        indice_pairs = tester.pair_bwd  # out -> inp
+                        mask_ops = tester.pair_mask_bwd_splits
+                        mask_argsorts = tester.mask_argsort_bwd_splits
+                        mask_output = mask_output_bwd
+                    else:
+                        indice_pairs = tester.pair_fwd  # inp -> out
+                        mask_ops = tester.pair_mask_fwd_splits
+                        mask_argsorts = tester.mask_argsort_fwd_splits
+                        mask_output = mask_output_fwd
+
+                    for j in range(tester.num_split):
+                        # beta = 1 if j == 1 else 0
+                        beta = 1 if j > 0 else 0
+                        if bias_cur is not None:
+                            beta = 1
+                        if j > 0:
+                            bias_cur = None
+                        mask_filter = tester.masks[j].item()
+                        reverse_mask = False
+                        if desp.op_type.value == ConvOpType.kBackwardWeight.value:
+                            mask_op = mask_output[j]
+                        else:
+                            mask_op = mask_ops[j]
+                        if SPCONV_CPP_GEMM:
+
+                            CONV_CPP.run_with_tuned_result(
+                                ConvTuneResult(desp, tester.arch, spk),
+                                desp.op_type.value,
+                                inp_tv,
+                                weight_tv,
+                                output_tv,
+                                torch_tensor_to_tv(mask_op, dtype=tv.uint32),
+                                torch_tensor_to_tv(mask_argsorts[j]),
+                                torch_tensor_to_tv(mask_output[j], dtype=tv.uint32),
+                                torch_tensor_to_tv(indice_pairs),
+                                reverse_mask,
+                                mask_filter=mask_filter,
+                                mask_width=mask_width,
+                                beta=beta,
+                                verbose=False,
+                                force_nvrtc=force_nvrtc,
+                                bias=bias if is_fwd and bias is not None else tv.Tensor(),
+                                act_type=act,
+                                groups=group,
+                            )
+                        else:
+                            CONV.run_with_tuned_result(
+                                BestConvAlgoByProfile(desp, tester.arch, spk),
+                                desp.op_type.value,
+                                inp_tv,
+                                weight_tv,
+                                output_tv,
+                                torch_tensor_to_tv(mask_op, dtype=tv.uint32),
+                                torch_tensor_to_tv(mask_argsorts[j]),
+                                torch_tensor_to_tv(mask_output[j], dtype=tv.uint32),
+                                torch_tensor_to_tv(indice_pairs),
+                                reverse_mask,
+                                mask_filter=mask_filter,
+                                mask_width=mask_width,
+                                beta=beta,
+                                verbose=False,
+                                force_nvrtc=force_nvrtc,
+                                bias=bias if is_fwd else None,
+                                act_type=act,
+                                groups=group,
+                            )
+
+                out_ref = tester.out_ref
+                din_ref = tester.din_ref
+                dw_ref = tester.dw_ref
+                if op_type == ConvOpType.kForward:
+                    out_my = output_tv.cpu().numpy()
+                    out_my = out_my[tester.out_order]
+                    if dtype != np.float16:
+                        test_case.assertAllClose(out_ref, out_my, atol=atol, rtol=rtol)
+                    else:
+                        error_norm = np.linalg.norm(out_ref.reshape(-1) - out_my.reshape(-1))
+                        if (error_norm > 5):
+                            print(f"{desp}, Error={error_norm}")
+                        assert error_norm < 10 * multipler
+                else:
+                    din_my = inp_tv.cpu().numpy()
+                    if dtype != np.float16:
+                        test_case.assertAllClose(din_ref, din_my, atol=atol, rtol=rtol)
+                    else:
+                        error_norm = np.linalg.norm(din_ref.reshape(-1) - din_my.reshape(-1))
+                        assert error_norm < 10 * multipler, f"{desp}, {error_norm}, {k}, {s}, {p}, {d}"
+                print(desp, " \033[1;38;5;9m PASSED \033[0m ", op_type, f" with K {K}")
+        inp_tv, weight_tv, output_tv = tester.get_operands(ConvOpType.kBackwardWeight)
+        for spk in SPK_SET:
+            for mask_width, mask_output in mask_width_to_mask_out_fwd.items():
+                if SPCONV_CPP_GEMM:
+                    avail_desps = CONV_CPP.get_all_available(inp_tv, weight_tv, output_tv, 
+                        NHWC.layout_type.value, NHWC.layout_type.value, 
+                        NHWC.layout_type.value, NHWC.interleave, NHWC.interleave, NHWC.interleave, arch, 
+                        ConvOpType.kBackwardWeight.value, mask_width, True, False,
+                        use_tf32=SPCONV_ALLOW_TF32, groups=group)
+                else:
+                    avail_desps = CONV.get_all_available(inp_tv, weight_tv, output_tv, NHWC, NHWC, NHWC, arch, ConvOpType.kBackwardWeight, mask_width,
+                        use_tf32=SPCONV_ALLOW_TF32, groups=group)
+                for desp in avail_desps:
+                    weight_tv.zero_()
+                    if subm:
+                        indice_pairs = tester.pair_fwd
+                        for j in range(tester.num_split):
+                            beta = 0
+                            mask_filter = tester.masks[j].item()
+                            mask_op = mask_output[j]
+                            mask_op_tv = torch_tensor_to_tv(mask_op, dtype=tv.uint32)
+                            # mask_op_np = mask_op_tv.cpu().numpy()
+                            # bit_ref = np.bitwise_or.reduce(mask_op_np, axis=0)
+                            # bit_my = mask_filter
+                            CONV.run_with_tuned_result(
+                                BestConvAlgoByProfile(desp, tester.arch, spk),
+                                desp.op_type.value,
+                                inp_tv,
+                                weight_tv,
+                                output_tv,
+                                mask_op_tv,
+                                torch_tensor_to_tv(tester.mask_argsort_fwd_splits[j]),
+                                tv.Tensor(),
+                                torch_tensor_to_tv(indice_pairs),
+                                reverse_mask=False,
+                                mask_filter=mask_filter,
+                                mask_width=mask_width,
+                                beta=beta,
+                                verbose=False,
+                                groups=group
+                            )
+                    else:
+                        indice_pairs = tester.pair_fwd  # inp -> out
+                        mask_ops = tester.pair_mask_fwd_splits
+                        mask_argsorts = tester.mask_argsort_fwd_splits
+                        for j in range(tester.num_split):
+                            # beta = 1 if j == 1 else 0
+                            beta = 0
+                            mask_filter = tester.masks[j].item()
+                            reverse_mask = False
+                            mask_op = mask_output[j]
+
+                            CONV.run_with_tuned_result(
+                                BestConvAlgoByProfile(desp, tester.arch, spk),
+                                desp.op_type.value,
+                                inp_tv,
+                                weight_tv,
+                                output_tv,
+                                torch_tensor_to_tv(mask_op, dtype=tv.uint32),
+                                torch_tensor_to_tv(mask_argsorts[j]),
+                                torch_tensor_to_tv(mask_output[j], dtype=tv.uint32),
+                                torch_tensor_to_tv(indice_pairs),
+                                reverse_mask,
+                                mask_filter=mask_filter,
+                                mask_width=mask_width,
+                                beta=beta,
+                                verbose=False,
+                                groups=group,
+                            )
+                    dw_ref = tester.dw_ref
+                    dw_my = weight_tv.cpu().numpy()
+                    if dtype != np.float16:
+                        # print(desp, spk, K, C, mask_width, algo)
+                        test_case.assertAllClose(dw_ref, dw_my, atol=atol, rtol=rtol)
+                    else:
+                        error_norm = np.linalg.norm(dw_ref.reshape(-1) - dw_my.reshape(-1))
+                        # print(desp, error_norm)
+                        if (error_norm > 5):
+                            print(f"{desp}, Error={error_norm}, {spk}")
+                        assert error_norm < 10 * multipler
+                    print(desp, " \033[1;38;5;9m PASSED \033[0m ", desp.op_type, " of ", spk, f" with Ncikig {output_tv.shape[0]} {C_i}, {K_i}, {group}")
+
+
 def test_all_algo_unit():
     # for i in range(5):
-    _test_impgemm_conv_cuda(True)
-    _test_impgemm_conv_cuda(False)
-    # _test_native_conv_cuda(True)
-    # _test_native_conv_cuda(False)
+    # _test_impgemm_singlegrouped_conv_cuda(True)
+    # _test_impgemm_singlegrouped_conv_cuda(False)
+    _test_impgemm_depthwise_conv_cuda(True)
+    _test_impgemm_depthwise_conv_cuda(False)
 
 
 if __name__ == "__main__":

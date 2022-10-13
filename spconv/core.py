@@ -1217,6 +1217,36 @@ IMPLGEMM_TURING_PARAMS = [
 
 IMPLGEMM_GROUPED_PARAMS = [
 #############################################  SIMT  ########################################
+    *gen_conv_params([ConvOpType.kForward], (64, 64, 8), (32, 32, 8),
+                     NDIM_DONT_CARE,
+                     ConvIterAlgo.Optimized,
+                     2,
+                     "f16,f16,f16,f32,f32",
+                     NHWC,
+                     NHWC,
+                     NHWC,
+                     GemmAlgo.Simt,
+                     None,
+                     mask_sparse=True,
+                     increment_k_first=True,
+                     access_per_vector=1,
+                     group_mode=ConvGroupMode.kDepthwise),
+    
+    *gen_conv_params([ConvOpType.kForward], (64, 32, 16), (32, 32, 16),
+                     NDIM_DONT_CARE,
+                     ConvIterAlgo.Optimized,
+                     2,
+                     "f16,f16,f16,f32,f32",
+                     NHWC,
+                     NHWC,
+                     NHWC,
+                     GemmAlgo.Simt,
+                     None,
+                     mask_sparse=True,
+                     increment_k_first=True,
+                     access_per_vector=1,
+                     group_mode=ConvGroupMode.kDepthwise),
+
     *gen_conv_params(ConvFwdAndBwdInput, (32, 64, 16), (32, 32, 8),
                      NDIM_DONT_CARE,
                      ConvIterAlgo.Optimized,
@@ -1379,6 +1409,9 @@ IMPLGEMM_GROUPED_PARAMS = [
                      increment_k_first=True,
                      access_per_vector=1,
                      group_mode=ConvSingleGroupedMode),
+
+
+
 ]
 
 ALL_NATIVE_PARAMS = SHUFFLE_SIMT_PARAMS + SHUFFLE_TURING_PARAMS + SHUFFLE_VOLTA_PARAMS + SHUFFLE_AMPERE_PARAMS

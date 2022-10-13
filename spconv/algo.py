@@ -722,6 +722,9 @@ class SimpleConv:
                     continue
                 K_per_group = out.shape[-1] // groups
                 C_per_group = inp.shape[-1] // groups
+                if K_per_group == 1 and C_per_group == 1:
+                    if not desp.group_mode.value == ConvGroupMode.kDepthwise.value:
+                        continue
                 if not desp.support_grouped(C_per_group, K_per_group):
                     continue
             else:
