@@ -33,7 +33,7 @@ from spconv.pytorch import ops
 from spconv.cppconstants import CPU_ONLY_BUILD
 from spconv.pytorch.core import IndiceData, SparseConvTensor, ImplicitGemmIndiceData, expand_nd
 from spconv.pytorch.modules import SparseModule
-from spconv.constants import SAVED_WEIGHT_LAYOUT, ALL_WEIGHT_IS_KRSC, SPCONV_DEBUG_WEIGHT
+from spconv.constants import SAVED_WEIGHT_LAYOUT, ALL_WEIGHT_IS_KRSC, SPCONV_DEBUG_WEIGHT, SPCONV_DEPTHWISE_GROUPS
 from spconv.utils import nullcontext
 from torch.nn.init import calculate_gain
 from cumm import tensorview as tv
@@ -73,6 +73,12 @@ class SparseConvolution(SparseModule):
                  name=None):
         super(SparseConvolution, self).__init__(name=name)
         # assert groups == 1, "don't support groups for now"
+        if groups == SPCONV_DEPTHWISE_GROUPS:   # it is depthwised
+            if in_channels != out_channels:
+                print("\033[1;38;5;9m WARNING:  i/o channels doesn't same in Depthwise, will regard as 1 group\033[0m")
+                groups = 1
+            else:
+                groups = in_channels
         assert in_channels % groups == 0 and out_channels % groups == 0, "i/o channels should be divisible by groups"
         self.ndim = ndim
         self.in_channels = in_channels

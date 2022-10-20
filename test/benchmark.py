@@ -243,7 +243,9 @@ class NetGrouped(nn.Module):
             [2, 2, 2, 2, 2, 2, 2, 2, 2, 8, 2, 8, 16],
             [4, 4, 3, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4],
             [8, 8, 4, 8, 8, 8, 8, 8, 6, 2, 8, 2, 2],
-            [16,16,8, 16,16,16,10, 16, 8,16,16,16, 8]
+            [16,16,8, 16,16,16,10, 16, 8,16,16,16, 8],
+
+            [-1] * 13
         ]
         # pool_algo = ConvAlgo.Native
         self.net = spconv.SparseSequential(
@@ -569,7 +571,8 @@ def main():
     # MaskImpGemm: 51.0ms
     # MaskSplitImpGemm: 41.1ms
     # algo = None
-    net = NetGrouped(spatial_shape, algo, 0).to(device).eval().to(dtype)# .train()
+    net = NetGrouped(spatial_shape, algo, -1).to(device).eval().to(dtype)# .train()
+    # net = Net(spatial_shape, algo).to(device).eval().to(dtype)# .train()
     # net.load_state_dict(net.state_dict())
     spconv.assign_name_for_sparse_modules(net)
     print(coors_th.shape)

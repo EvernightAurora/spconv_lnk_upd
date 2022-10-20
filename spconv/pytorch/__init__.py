@@ -21,7 +21,7 @@ from spconv.pytorch.pool import (SparseMaxPool1d, SparseMaxPool2d,
                                  SparseAvgPool1d, SparseAvgPool2d,
                                  SparseAvgPool3d)
 from spconv.pytorch.tables import AddTable, ConcatTable, JoinTable
-
+from spconv.constants import SPCONV_DEPTHWISE_GROUPS
 
 class ToDense(SparseModule):
     """convert SparseConvTensor to NCHW dense tensor.

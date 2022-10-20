@@ -687,12 +687,12 @@ def _test_impgemm_depthwise_conv_cuda(subm: bool):
     ndim = 3
     np.random.seed(50004)
     dtype_to_tol = {
-        np.float32: (1e-2, 1e-2),
+        np.float32: (1e-4, 1e-4),
         np.float16: (1e-2, 1e-2),
         np.int8: (1e-4, 1e-4),
     }
     device = torch.device("cuda:0")
-    shapes = [[9, 8, 7]]
+    shapes = [[39, 38, 37]]
     batchsizes = [1]
     dtypes = [np.float16]
     # dtypes = [np.float16]
@@ -701,13 +701,13 @@ def _test_impgemm_depthwise_conv_cuda(subm: bool):
     test_case = TestCase()
     # in_channels = [32]
     # out_channels = [32, 48, 64]
-    channels = [2, 3, 4, 6, 8, 11, 14, 20, 100, 200, 300]
+    channels = [64]
     # in_channels = [32]
     # out_channels = [32]
 
     multiple_base = 16
     if subm:
-        ksizes = [1]
+        ksizes = [3]
         strides = [1]
         paddings = [0]
         dilations = [1]
@@ -729,11 +729,12 @@ def _test_impgemm_depthwise_conv_cuda(subm: bool):
         group = CK
         C = CK
         K = CK
-        SPK_SET = [1, 4, 16, 64]
+        SPK_SET = [1] #, 4, 16, 64]
         # if K <= 32 or K % 32 != 0:
         #     SPK_SET = [1]
+        # np.random.seed(1112)
         shape_prod = np.prod(shape)
-        num_batch = np.random.randint(int(0.2 * shape_prod), int(0.7 * shape_prod))
+        num_batch = np.random.randint(int(0.4 * shape_prod), int(0.8 * shape_prod))
         # if C_i % 32:
         #     SPK_SET = [1]
         # C = np.random.randint(int(0.3 * C), int(0.7 * C))
@@ -753,6 +754,9 @@ def _test_impgemm_depthwise_conv_cuda(subm: bool):
         op_types = [ConvOpType.kForward, ConvOpType.kBackwardInput]
         spk = 1
         for op_type in op_types:
+            # if op_type == ConvOpType.kForward:
+            #     print("PASS")
+            #     continue
             inp_tv, weight_tv, output_tv = tester.get_operands(op_type)
             if SPCONV_CPP_GEMM:
                 avail_desps = CONV_CPP.get_all_available(inp_tv, weight_tv, output_tv, 
@@ -778,7 +782,8 @@ def _test_impgemm_depthwise_conv_cuda(subm: bool):
                 # this algo must success
                 mask_width = desp.tile_shape[0]
                 # if mask_width != 32:
-                #     continue
+                # #     continue
+
                 if mask_width not in mask_width_to_mask_out_fwd:
                     mask_width_to_mask_out_fwd[mask_width] = torch.zeros([2, div_up(tester.out_inds.shape[0], mask_width)],
                                       dtype=torch.int32,
@@ -1043,7 +1048,7 @@ def _test_impgemm_depthwise_conv_cuda(subm: bool):
                         if (error_norm > 5):
                             print(f"{desp}, Error={error_norm}, {spk}")
                         assert error_norm < 10 * multipler
-                    print(desp, " \033[1;38;5;9m PASSED \033[0m ", desp.op_type, " of ", spk, f" with Ncikig {output_tv.shape[0]} {C_i}, {K_i}, {group}")
+                    print(desp, " \033[1;38;5;9m PASSED \033[0m ", desp.op_type, " of ", spk, f" with K {group}")
 
 
 def test_all_algo_unit():
@@ -1051,7 +1056,7 @@ def test_all_algo_unit():
     # _test_impgemm_singlegrouped_conv_cuda(True)
     # _test_impgemm_singlegrouped_conv_cuda(False)
     _test_impgemm_depthwise_conv_cuda(True)
-    _test_impgemm_depthwise_conv_cuda(False)
+    # _test_impgemm_depthwise_conv_cuda(False)
 
 
 if __name__ == "__main__":

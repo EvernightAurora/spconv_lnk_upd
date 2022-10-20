@@ -55,7 +55,7 @@ else:
 
 # for f16 backward weight, larger splitk, larger compute error.
 # so we use this env to control maximum splitk.
-SPCONV_BWD_SPLITK = list(map(int, os.getenv("SPCONV_BWD_SPLITK", "1,2,4,8,16,32,64").split(",")))
+SPCONV_BWD_SPLITK = list(map(int, os.getenv("SPCONV_BWD_SPLITK", "1,2,4,8,16,32,64,128,256,512,1024").split(",")))
 
 SPCONV_NVRTC_MODE = NVRTCMode.ConstantMemory
 SPCONV_DEBUG_NVRTC_KERNELS = False
@@ -107,7 +107,7 @@ SPCONV_USE_DIRECT_TABLE = True
 # currently use cpp pair gen is slightly slower than python, I don't know why.
 SPCONV_CPP_INDICE_PAIRS_IGEMM = os.getenv("SPCONV_CPP_INDICE_PAIRS_IGEMM", "0") == "1" 
 
-SPCONV_CPP_GEMM = True
+SPCONV_CPP_GEMM = False #True
 
 SPCONV_FX_TRACE_MODE = os.getenv("SPCONV_FX_TRACE_MODE", "0") == "1"
 
@@ -117,3 +117,5 @@ SPCONV_DIRECT_TABLE_HASH_SIZE_SCALE = 1.1
 SPCONV_ALLOW_TF32 = False
 
 ALGO_PYTHON_OUTPUT_TUNE_DETAIL = True
+
+SPCONV_DEPTHWISE_GROUPS = -1
