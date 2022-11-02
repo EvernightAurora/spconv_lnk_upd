@@ -730,10 +730,14 @@ class SimpleConv:
             else:
                 if desp.group_mode.value != ConvGroupMode.kNone.value:
                     continue
-
-            ldi = inp.dim(-1) // groups
-            ldw = weight.dim(-1)
-            ldo = out.dim(-1) // groups
+            if desp.group_mode.value == ConvGroupMode.kDepthwise.value:
+                ldi = inp.dim(-1)
+                ldw = weight.dim(-1) * groups
+                ldo = out.dim(-1)
+            else:
+                ldi = inp.dim(-1) // groups
+                ldw = weight.dim(-1)
+                ldo = out.dim(-1) // groups
             mask_width_valid = True
 
             if arch >= (7, 0) and is_fp16:

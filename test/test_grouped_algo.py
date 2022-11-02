@@ -687,21 +687,21 @@ def _test_impgemm_depthwise_conv_cuda(subm: bool):
     ndim = 3
     np.random.seed(50004)
     dtype_to_tol = {
-        np.float32: (1e-4, 1e-4),
+        np.float32: (1e-3, 1e-3),
         np.float16: (1e-2, 1e-2),
         np.int8: (1e-4, 1e-4),
     }
-    device = torch.device("cuda:0")
+    device = torch.device("cuda:1")
     shapes = [[39, 38, 37]]
     batchsizes = [1]
-    dtypes = [np.float16]
+    dtypes = [np.float16, np.float32]
     # dtypes = [np.float16]
 
     # dtypes = [np.int8]
     test_case = TestCase()
     # in_channels = [32]
     # out_channels = [32, 48, 64]
-    channels = [64]
+    channels = [2, 3, 4, 6, 8, 11, 14, 16, 32, 64, 128, 160]
     # in_channels = [32]
     # out_channels = [32]
 
@@ -729,7 +729,7 @@ def _test_impgemm_depthwise_conv_cuda(subm: bool):
         group = CK
         C = CK
         K = CK
-        SPK_SET = [1] #, 4, 16, 64]
+        SPK_SET = []#1 , 4, 16, 64]
         # if K <= 32 or K % 32 != 0:
         #     SPK_SET = [1]
         # np.random.seed(1112)
@@ -783,6 +783,8 @@ def _test_impgemm_depthwise_conv_cuda(subm: bool):
                 mask_width = desp.tile_shape[0]
                 # if mask_width != 32:
                 # #     continue
+                # if desp.tile_shape[2] != desp.tile_shape[1]:
+                #     continue
 
                 if mask_width not in mask_width_to_mask_out_fwd:
                     mask_width_to_mask_out_fwd[mask_width] = torch.zeros([2, div_up(tester.out_inds.shape[0], mask_width)],
