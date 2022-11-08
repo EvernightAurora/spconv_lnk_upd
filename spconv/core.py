@@ -1222,7 +1222,7 @@ IMPLGEMM_GROUPED_PARAMS = [
                      NDIM_DONT_CARE,
                      ConvIterAlgo.Optimized,
                      2,
-                     ["f32,f32,f32,f32,f32", "f16,f16,f16,f32,f32"],
+                     ["f16,f16,f16,f32,f32", "f32,f32,f32,f32,f32"],
                      NHWC,
                      NHWC,
                      NHWC,
@@ -1233,7 +1233,6 @@ IMPLGEMM_GROUPED_PARAMS = [
                      access_per_vector=1,
                      group_mode=ConvGroupMode.kDepthwise),
 
-    
 
     *gen_conv_params(ConvFwdAndBwdInput, (64, 64, 64), (32, 64, 64),
                      NDIM_DONT_CARE,
@@ -1249,8 +1248,39 @@ IMPLGEMM_GROUPED_PARAMS = [
                      increment_k_first=True,
                      access_per_vector=1,
                      group_mode=ConvGroupMode.kDepthwise),
+
     
-    *gen_conv_params(ConvFwdAndBwdInput, (128, 64, 64), (64, 64, 64),
+    *gen_conv_params(ConvFwdAndBwdInput, (64, 64, 64), (16, 64, 64),
+                     NDIM_DONT_CARE,
+                     ConvIterAlgo.Optimized,
+                     2,
+                     ["f16,f16,f16,f32,f32"],
+                     NHWC,
+                     NHWC,
+                     NHWC,
+                     GemmAlgo.Simt,
+                     None,
+                     mask_sparse=True,
+                     increment_k_first=True,
+                     access_per_vector=1,
+                     group_mode=ConvGroupMode.kDepthwise),
+
+    *gen_conv_params(ConvFwdAndBwdInput, (32, 128, 128), (8, 128, 128),
+                     NDIM_DONT_CARE,
+                     ConvIterAlgo.Optimized,
+                     2,
+                     ["f16,f16,f16,f32,f32"],
+                     NHWC,
+                     NHWC,
+                     NHWC,
+                     GemmAlgo.Simt,
+                     None,
+                     mask_sparse=True,
+                     increment_k_first=True,
+                     access_per_vector=1,
+                     group_mode=ConvGroupMode.kDepthwise),
+    
+    *gen_conv_params(ConvFwdAndBwdInput, (32, 64, 64), (8, 64, 64),
                      NDIM_DONT_CARE,
                      ConvIterAlgo.Optimized,
                      2,
@@ -1266,7 +1296,7 @@ IMPLGEMM_GROUPED_PARAMS = [
                      group_mode=ConvGroupMode.kDepthwise),
 
 
-    *gen_conv_params(ConvFwdAndBwdInput, (64, 32, 32), (32, 32, 32),
+    *gen_conv_params(ConvFwdAndBwdInput, (64, 32, 32), (16, 32, 32),
                      NDIM_DONT_CARE,
                      ConvIterAlgo.Optimized,
                      2,
@@ -1282,7 +1312,7 @@ IMPLGEMM_GROUPED_PARAMS = [
                      group_mode=ConvGroupMode.kDepthwise),
 
 
-    *gen_conv_params(ConvFwdAndBwdInput, (128, 32, 32), (32, 32, 32),
+    *gen_conv_params(ConvFwdAndBwdInput, (32, 32, 32), (16, 32, 32),
                      NDIM_DONT_CARE,
                      ConvIterAlgo.Optimized,
                      2,

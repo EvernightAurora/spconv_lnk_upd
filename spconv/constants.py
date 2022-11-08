@@ -55,7 +55,7 @@ else:
 
 # for f16 backward weight, larger splitk, larger compute error.
 # so we use this env to control maximum splitk.
-SPCONV_BWD_SPLITK = list(map(int, os.getenv("SPCONV_BWD_SPLITK", "1,2,4,8,16,32,64,128,256,512,1024").split(",")))
+SPCONV_BWD_SPLITK = list(map(int, os.getenv("SPCONV_BWD_SPLITK", "1,2,4,8,16,32,64").split(",")))
 
 SPCONV_NVRTC_MODE = NVRTCMode.ConstantMemory
 SPCONV_DEBUG_NVRTC_KERNELS = False
