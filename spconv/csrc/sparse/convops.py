@@ -1061,7 +1061,9 @@ class ConvTunerSimple(pccm.ParameterizedClass):
                     continue;
                 int C_per_group = inp.dim(-1) / groups;
                 int K_per_group = out.dim(-1) / groups;
-                
+                if (K_per_group == 1 && C_per_group == 1)
+                    if (desp.group_mode != tv::gemm::ConvGroupMode::kDepthwise)
+                        continue;
                 if (!desp.support_grouped(C_per_group, K_per_group))
                     continue;
             }} else {{
@@ -1073,9 +1075,14 @@ class ConvTunerSimple(pccm.ParameterizedClass):
             int ldi = inp.dim(-1) / groups;
             int ldw = weight.dim(-1);
             int ldo = out.dim(-1) / groups;
+            if (desp.group_mode == tv::gemm::ConvGroupMode::kDepthwise){{
+                ldi = inp.dim(-1);
+                ldw = weight.dim(-1);
+                ldo = out.dim(-1);
+            }}
             bool mask_width_valid = true;
 
-            if (arch >= std::make_tuple(7, 0) && is_fp16){{
+            if (arch >= std::make_tuple(7, 0) && is_fp16 && groups == 1){{
                 // skip simt fp16 kernels if we have tensor core
                 if (desp.algo == {pccm.literal(GemmAlgo.Simt.value)} && ldi >= 16 && ldo >= 16){{
                     continue;

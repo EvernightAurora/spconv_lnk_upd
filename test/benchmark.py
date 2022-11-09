@@ -25,6 +25,9 @@ import spconv.pytorch as spconv
 from spconv.utils import Point2VoxelCPU3d
 from tqdm import tqdm
 
+# import os
+# os.environ["CUDA_LAUNCH_BLOCKING"]="1"
+
 # torch.backends.cudnn.enabled = False
 def waymo_data(batch_size=1, num_features=-1):
     gen = Point2VoxelCPU3d([0.1, 0.1, 0.1], [-80, -80, -2, 80, 80, 6], 3,
@@ -372,6 +375,120 @@ class NetGrouped(nn.Module):
         return self.net(x)
 
 
+class NetGroupedSm(nn.Module):
+    def __init__(self, shape, algo, gid=0):
+        super().__init__()
+        pool_algo = algo
+        gps = [
+            [1] * 13,
+
+            [-1] * 13
+        ]
+        # pool_algo = ConvAlgo.Native
+        self.net = spconv.SparseSequential(
+            spconv.SubMConv3d(3, 8, 3, bias=False, indice_key="c0",
+                              algo=algo),
+
+            spconv.SubMConv3d(8,
+                              8,
+                              3,
+                              bias=False,
+                              indice_key="c0",
+                              algo=algo,
+                              groups=gps[gid][0]),
+
+            spconv.SubMConv3d(8,
+                              16,
+                              3,
+                              bias=False,
+                              indice_key="c1",
+                              algo=algo,
+                              groups=gps[gid][1]),
+            spconv.SubMConv3d(16,
+                              16,
+                              3,
+                              bias=False,
+                              indice_key="c1",
+                              algo=algo,
+                              groups=gps[gid][2]),
+
+            spconv.SubMConv3d(16,
+                              32,
+                              3,
+                              bias=False,
+                              indice_key="c2",
+                              algo=algo,
+                              groups=gps[gid][3]),
+            spconv.SubMConv3d(32,
+                              32,
+                              3,
+                              bias=False,
+                              indice_key="c2",
+                              algo=algo,
+                              groups=gps[gid][4]),
+
+            spconv.SubMConv3d(32,
+                              64,
+                              3,
+                              bias=False,
+                              indice_key="c3",
+                              algo=algo,
+                              groups=gps[gid][5]),
+            spconv.SubMConv3d(64,
+                              64,
+                              3,
+                              bias=False,
+                              indice_key="c3",
+                              algo=algo,
+                              groups=gps[gid][6]),
+
+            spconv.SparseMaxPool3d(2, 2, algo=pool_algo),
+            spconv.SubMConv3d(64,
+                              96,
+                              3,
+                              bias=False,
+                              indice_key="c4",
+                              algo=algo,
+                              groups=gps[gid][7]),
+            spconv.SubMConv3d(96,
+                              96,
+                              3,
+                              bias=False,
+                              indice_key="c4",
+                              algo=algo,
+                              groups=gps[gid][8]),
+
+
+            spconv.SubMConv3d(96,
+                              128,
+                              3,
+                              bias=False,
+                              indice_key="c5",
+                              algo=algo,
+                              groups=gps[gid][9]),
+            spconv.SubMConv3d(128,
+                              128,
+                              3,
+                              bias=False,
+                              indice_key="c5",
+                              algo=algo,
+                              groups=gps[gid][10]),
+
+        )
+        max_batch_size = 1
+
+        self.shape = shape
+
+    def forward(self, features, coors, batch_size, enable_timer: bool = False):
+        x = spconv.SparseConvTensor(features,
+                                    coors,
+                                    self.shape,
+                                    batch_size,
+                                    # self.grid,
+                                    enable_timer=enable_timer)
+        return self.net(x)
+
+
 class Net2(nn.Module):
     def __init__(self, shape, algo):
         super().__init__()
@@ -428,49 +545,6 @@ class Net2(nn.Module):
                                     self.grid)
         return self.net(x)
 
-
-
-class NetSm(nn.Module):
-    def __init__(self, shape, algo):
-        super().__init__()
-        self.net = spconv.SparseSequential(
-            spconv.SubMConv3d(3,
-                              8,
-                              3,
-                              bias=False,
-                              indice_key="c0",
-                              algo=algo),
-            spconv.SubMConv3d(8,
-                              16,
-                              3,
-                              bias=False,
-                              indice_key="c0",
-                              algo=algo),
-            spconv.SubMConv3d(16,
-                              32,
-                              3,
-                              bias=False,
-                              indice_key="c0",
-                              algo=algo),
-            spconv.SubMConv3d(32,
-                              64,
-                              3,
-                              bias=False,
-                              indice_key="c0",
-                              algo=algo),
-            
-        )
-        max_batch_size = 1
-        # grid (dense map) is used for indice generation. use pre-allocated grid can run faster.
-        self.grid = torch.full([max_batch_size, *shape], -1,
-                               dtype=torch.int32).cuda()
-        # self.grid = None
-        self.shape = shape
-
-    def forward(self, features, coors, batch_size, enable_timer: bool = False):
-        x = spconv.SparseConvTensor(features, coors, self.shape, batch_size,
-                                    self.grid, enable_timer=enable_timer)
-        return self.net(x)
 
 import numpy as np
 from cumm import tensorview as tv
@@ -571,7 +645,8 @@ def main():
     # MaskImpGemm: 51.0ms
     # MaskSplitImpGemm: 41.1ms
     # algo = None
-    net = NetGrouped(spatial_shape, algo, -1).to(device).eval().to(dtype)# .train()
+    net = NetGroupedSm(spatial_shape, algo, -1).to(device).eval().to(dtype)
+    # net = NetGrouped(spatial_shape, algo, -1).to(device).eval().to(dtype)# .train()
     # net = Net(spatial_shape, algo).to(device).eval().to(dtype)# .train()
     # net.load_state_dict(net.state_dict())
     spconv.assign_name_for_sparse_modules(net)
@@ -626,9 +701,9 @@ def main():
         # torch.cuda.synchronize()
         # times.append(time.time() - t)
 
-    # # # print((net.grid == -1).float().sum(), net.grid.numel())
-    # # # print("spconv time", time.time() - t)
-    # print("spconv bw time", np.mean(times[5:]))
+    # # print((net.grid == -1).float().sum(), net.grid.numel())
+    # # print("spconv time", time.time() - t)
+    print("spconv bw time", np.mean(times[5:]))
 
 
 if __name__ == "__main__":

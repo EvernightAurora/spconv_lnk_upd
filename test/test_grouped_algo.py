@@ -73,6 +73,8 @@ def grouped_conv_gemm_ref(a, b, op_type, groups):
     if op_type == ConvOpType.kForward:
         C_per_group = b.shape[0]
         K_per_group = b.shape[1] // groups
+        if C_per_group == K_per_group == 1:
+            return depthwise_conv_gemm_ref(a, b, op_type, groups)
         c = np.zeros([a.shape[0], b.shape[1]], dtype=a.dtype)
         for i in range(groups):
             c_begin = i * C_per_group
@@ -84,6 +86,8 @@ def grouped_conv_gemm_ref(a, b, op_type, groups):
     elif op_type == ConvOpType.kBackwardInput:
         K_per_group = a.shape[1] // groups
         C_per_group = b.shape[1]
+        if C_per_group == K_per_group == 1:
+            return depthwise_conv_gemm_ref(a, b, op_type, groups)
         c = np.zeros([a.shape[0], C_per_group * groups], dtype=a.dtype)
         for i in range(groups):
             c_begin = i * C_per_group
@@ -94,6 +98,8 @@ def grouped_conv_gemm_ref(a, b, op_type, groups):
     else:
         K_per_group = a.shape[0] // groups
         C_per_group = b.shape[1] // groups
+        if C_per_group == K_per_group == 1:
+            return depthwise_conv_gemm_ref(a, b, op_type, groups)
         c = np.zeros([K_per_group * groups, C_per_group], dtype=a.dtype)
         for i in range(groups):
             c_begin = i * C_per_group
@@ -104,10 +110,33 @@ def grouped_conv_gemm_ref(a, b, op_type, groups):
     return c
 
 
+def depthwise_conv_gemm_ref(a, b, op_type, groups):           
+    # fwd:  N * C @ C/g * K => N * K
+    # bwdI: N * K @ K * C/g => N * C
+    # bwdW: K * N @ N * C => K * C/g
+    if op_type == ConvOpType.kForward:
+        C_per_group = b.shape[0]
+        K_per_group = b.shape[1] // groups
+        c = np.zeros([a.shape[0], b.shape[1]], dtype=a.dtype)
+        c[:, :] = a * b
+
+    elif op_type == ConvOpType.kBackwardInput:
+        K_per_group = a.shape[1] // groups
+        C_per_group = b.shape[1]
+        c = np.zeros([a.shape[0], C_per_group * groups], dtype=a.dtype)
+        c[:, :] = a * b.reshape((1, -1))
+    else:
+        K_per_group = a.shape[0] // groups
+        C_per_group = b.shape[1] // groups
+        c = np.zeros([K_per_group * groups, C_per_group], dtype=a.dtype)
+        c0 = a @ b
+        c[:, :] = c0[([i for i in range(groups)],) * 2].reshape((-1, 1))
+    return c
+
 class SparseConvTesterGrouped:
     def __init__(self, algo: ConvAlgo, subm: bool, shape: List[int], bs: int, dtype: np.dtype, N: int, K: int, C: int, 
         ksize: int, stride: int, padding: int, dilation: int, check_bias: bool = False, check_act: bool = False,
-        groups: int = 1, ranged_weight: bool = True) -> None:
+        groups: int = 1, ranged_weight: bool = False) -> None:
         ndim = 3
         self.ranged_weight = ranged_weight
         transpose = False
@@ -338,8 +367,8 @@ def _test_impgemm_singlegrouped_conv_cuda(subm: bool):
     test_case = TestCase()
     # in_channels = [32]
     # out_channels = [32, 48, 64]
-    in_channels_per = [1, 2, 4, 8, 16, 24, 64]
-    out_channels_per = [1, 2, 4, 8, 16, 40, 96]
+    in_channels_per = [2, 4, 8, 16, 24, 64]
+    out_channels_per = [2, 4, 8, 16, 40, 96]
     # in_channels = [32]
     # out_channels = [32]
 
@@ -729,7 +758,7 @@ def _test_impgemm_depthwise_conv_cuda(subm: bool):
         group = CK
         C = CK
         K = CK
-        SPK_SET = []#1 , 4, 16, 64]
+        SPK_SET = [1, 4, 16, 64]
         # if K <= 32 or K % 32 != 0:
         #     SPK_SET = [1]
         # np.random.seed(1112)
@@ -1055,7 +1084,7 @@ def _test_impgemm_depthwise_conv_cuda(subm: bool):
 
 def test_all_algo_unit():
     # for i in range(5):
-    # _test_impgemm_singlegrouped_conv_cuda(True)
+    _test_impgemm_singlegrouped_conv_cuda(True)
     # _test_impgemm_singlegrouped_conv_cuda(False)
     _test_impgemm_depthwise_conv_cuda(True)
     # _test_impgemm_depthwise_conv_cuda(False)
