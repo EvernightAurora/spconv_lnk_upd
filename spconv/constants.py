@@ -116,6 +116,6 @@ SPCONV_DIRECT_TABLE_HASH_SIZE_SCALE = 1.1
 
 SPCONV_ALLOW_TF32 = False
 
-ALGO_PYTHON_OUTPUT_TUNE_DETAIL = True
+ALGO_PYTHON_OUTPUT_TUNE_DETAIL = False  # output time duration of each avail AlgoDesp in python version tuner
 
 SPCONV_DEPTHWISE_GROUPS = -1

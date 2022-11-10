@@ -771,38 +771,6 @@ IMPLGEMM_AMPERE_PARAMS = [
                      increment_k_first=True,
                      access_per_vector=1,
                      is_nvrtc=True),
-
-
-    
-    # *gen_conv_params(ConvFwdAndBwdInput, (32, 32, 32), (32, 32, 32),
-    #                  NDIM_DONT_CARE,
-    #                  ConvIterAlgo.Optimized,
-    #                  [2, 3, 4],
-    #                  "f16,f16,f16,f32,f32",
-    #                  NHWC,
-    #                  NHWC,
-    #                  NHWC,
-    #                  GemmAlgo.Ampere,
-    #                  TensorOp((16, 8, 8)),
-    #                  mask_sparse=True,
-    #                  increment_k_first=True,
-    #                  access_per_vector=1,
-    #                  group_mode=ConvGroupMode.kSingleGroup),
-    
-    # *gen_conv_params(ConvBwdWeight, (32, 32, 32), (32, 32, 32),
-    #                  NDIM_DONT_CARE,
-    #                  ConvIterAlgo.Optimized,
-    #                  [2, 3, 4],
-    #                  "f16,f16,f16,f32,f32",
-    #                  NHWC,
-    #                  NHWC,
-    #                  NHWC,
-    #                  GemmAlgo.Ampere,
-    #                  TensorOp((16, 8, 8)),
-    #                  mask_sparse=True,
-    #                  increment_k_first=True,
-    #                  access_per_vector=1,
-    #                  group_mode=ConvGroupMode.kSingleGroupUnaligned),
 ]
 
 IMPLGEMM_TURING_PARAMS = [

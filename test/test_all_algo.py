@@ -922,6 +922,5 @@ def test_all_algo_unit():
     _test_native_conv_cuda(False)
 
 
-
 if __name__ == "__main__":
     test_all_algo_unit()
