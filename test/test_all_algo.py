@@ -918,8 +918,9 @@ def test_all_algo_unit():
     # for i in range(5):
     _test_impgemm_conv_cuda(True)
     _test_impgemm_conv_cuda(False)
-    # _test_native_conv_cuda(True)
-    # _test_native_conv_cuda(False)
+    _test_native_conv_cuda(True)
+    _test_native_conv_cuda(False)
+
 
 
 if __name__ == "__main__":
